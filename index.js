@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const fs = require('fs');
 
 /* ── منع تشغيل أكثر من نسخة واحدة ─────────────────────────────────────── */
@@ -29,7 +31,6 @@ const {
 } = require('discord.js');
 const db = require('./database');
 const { deployCommands } = require('./deploy-commands');
-require('dotenv').config();
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
@@ -57,6 +58,14 @@ const trackingSessions = new Map();
 
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
+
+    try {
+        await db.waitForBootstrap();
+        console.log('✅ تم التحقق من جاهزية قاعدة البيانات');
+    } catch (e) {
+        console.error('❌ فشل تهيئة قاعدة البيانات:', e.message || e);
+        return;
+    }
 
     try {
         await deployCommands();

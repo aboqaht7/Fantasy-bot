@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { Pool } = require('pg');
 
 const pool = new Pool({
@@ -5,33 +7,50 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
-async function runBootstrapQuery(text) {
-    const client = await pool.connect();
-    try {
-        await client.query(text);
-    } finally {
-        client.release();
-    }
+async function runBootstrapQuery(client, text) {
+    await client.query(text);
+}
+
+const xPostsMigrationQueries = [
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets INTEGER DEFAULT 0`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies INTEGER DEFAULT 0`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'tweet'`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`,
+];
+
+async function waitForBootstrap() {
+    await bootstrapReady;
 }
 
 const bootstrapReady = (async () => {
-    await runBootstrapQuery(`
-        CREATE TABLE IF NOT EXISTS server_config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    `);
-    await runBootstrapQuery(`
-        CREATE TABLE IF NOT EXISTS x_posts (
-            id SERIAL PRIMARY KEY,
-            discord_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            x_username TEXT,
-            content TEXT NOT NULL,
-            likes INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    `);
+    const client = await pool.connect();
+    try {
+        await runBootstrapQuery(client, `
+            CREATE TABLE IF NOT EXISTS server_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        `);
+        await runBootstrapQuery(client, `
+            CREATE TABLE IF NOT EXISTS x_posts (
+                id SERIAL PRIMARY KEY,
+                discord_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                x_username TEXT,
+                content TEXT NOT NULL,
+                likes INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        for (const migrationQuery of xPostsMigrationQueries) {
+            await runBootstrapQuery(client, migrationQuery);
+        }
+    } finally {
+        client.release();
+    }
 })().catch((error) => {
     console.error('Failed to create required database tables (server_config, x_posts):', error);
     throw error;
@@ -464,16 +483,6 @@ async function getXTimeline(limit = 10) {
     );
     return res.rows;
 }
-
-// x_posts migrations for retweet/reply columns
-(async () => {
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets  INTEGER DEFAULT 0`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies   INTEGER DEFAULT 0`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type      TEXT DEFAULT 'tweet'`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`);
-})().catch(console.error);
 
 async function likePost(postId) {
     const res = await query(
@@ -1541,7 +1550,7 @@ async function sellJobItems(discordId) {
 }
 
 module.exports = {
-    query, ensureUser, generateIban,
+    query, waitForBootstrap, ensureUser, generateIban,
     unlockSlot3, isSlot3Unlocked,
     updateIban,
     getConfig, setConfig, logoutAllUsers, addCharacterLog, getCharacterLogs,
