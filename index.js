@@ -53,6 +53,8 @@ function markInteraction(id) {
 
 /* ── جلسات التراكينق: targetId → { code, trackerId, channelId, guildId, timer } ── */
 const trackingSessions = new Map();
+/* ── كولداون التراكينق: userId → expiresAt (timestamp) ── */
+const trackingCooldowns = new Map();
 
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
@@ -1220,7 +1222,13 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'tracking_btn') {
             const ciaRoleId = await db.getConfig('cia_chef_role');
             if (ciaRoleId && !interaction.member.roles.cache.has(ciaRoleId))
-                return interaction.reply({ content: '🔒 هذا الزر لأعضاء CIA فقط.', flags: 64 });
+                return interaction.reply({ content: '🔒 هذا الزر لـ CIA Chef فقط.', flags: 64 });
+
+            const cdExpires = trackingCooldowns.get(interaction.user.id);
+            if (cdExpires && Date.now() < cdExpires) {
+                const secsLeft = Math.ceil((cdExpires - Date.now()) / 1000);
+                return interaction.reply({ content: `⏳ التراكينق مغلق عليك لمدة **${secsLeft}** ثانية بعد.`, flags: 64 });
+            }
 
             const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
             const modal = new ModalBuilder()
@@ -3362,6 +3370,14 @@ client.on('interactionCreate', async interaction => {
                 if (targetId === interaction.user.id) {
                     return interaction.editReply({ content: '❌ ما تقدر تتبع نفسك.' });
                 }
+
+                // فحص الكولداون
+                const cdExpires = trackingCooldowns.get(interaction.user.id);
+                if (cdExpires && Date.now() < cdExpires) {
+                    const secsLeft = Math.ceil((cdExpires - Date.now()) / 1000);
+                    return interaction.editReply({ content: `⏳ التراكينق مغلق عليك، يتاح بعد **${secsLeft}** ثانية.` });
+                }
+
                 if (trackingSessions.has(targetId)) {
                     return interaction.editReply({ content: '⚠️ هذا الشخص عليه تراكينق نشط بالفعل.' });
                 }
@@ -3375,6 +3391,11 @@ client.on('interactionCreate', async interaction => {
                 let code = '';
                 for (let i = 0; i < 6; i++) code += CHARS[Math.floor(Math.random() * CHARS.length)];
 
+                // تفعيل الكولداون (10 دقائق)
+                const COOLDOWN_MS = 10 * 60 * 1000;
+                trackingCooldowns.set(interaction.user.id, Date.now() + COOLDOWN_MS);
+                setTimeout(() => trackingCooldowns.delete(interaction.user.id), COOLDOWN_MS);
+
                 let dmSent = true;
                 try {
                     await targetMember.send(
@@ -3387,11 +3408,26 @@ client.on('interactionCreate', async interaction => {
                     dmSent = false;
                 }
 
+                // إشعار الأونر (صاحب السيرفر) بأن تراكينق بدأ
+                try {
+                    const ownerUser = await client.users.fetch(interaction.guild.ownerId);
+                    const ownerNotifEmbed = new EmbedBuilder()
+                        .setTitle('📡 تم بدء تراكينق — إشعار الأونر')
+                        .setColor(0xE53935)
+                        .setDescription(
+                            `🕵️ **CIA Chef** <@${interaction.user.id}> بدأ تراكينق على ${targetMember}\n` +
+                            `👤 المُتتبَع: **${targetMember.displayName}** (\`${targetId}\`)\n` +
+                            `🏠 السيرفر: **${interaction.guild.name}**\n` +
+                            `📅 الوقت: <t:${Math.floor(Date.now() / 1000)}:F>`
+                        )
+                        .setTimestamp();
+                    await ownerUser.send({ embeds: [ownerNotifEmbed] });
+                } catch (_) {}
+
                 const timer = setTimeout(async () => {
                     if (!trackingSessions.has(targetId)) return;
                     trackingSessions.delete(targetId);
                     try {
-                        const trackerUser = await client.users.fetch(interaction.user.id);
                         const ch = await client.channels.fetch(interaction.channelId).catch(() => null);
                         if (ch) {
                             const doneEmbed = new EmbedBuilder()
@@ -3423,7 +3459,8 @@ client.on('interactionCreate', async interaction => {
                         `🎯 يتم الآن تتبع ${targetMember} لمدة **20 ثانية**\n` +
                         (dmSent
                             ? `📨 تم إرسال كود الإلغاء له في الخاص`
-                            : `⚠️ لم يتمكن البوت من إرسال رسالة خاصة للشخص (الـ DM مغلق)`)
+                            : `⚠️ لم يتمكن البوت من إرسال رسالة خاصة للشخص (الـ DM مغلق)`) +
+                        `\n⏳ سيُفتح التراكينق مجدداً بعد **10 دقائق**`
                     )
                     .setTimestamp();
 
