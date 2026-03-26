@@ -1898,7 +1898,6 @@ const companyTablesReady = (async () => {
             created_at       TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-    await schemaQuery(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS salary BIGINT DEFAULT 0`).catch(() => {});
     await schemaQuery(`
         CREATE TABLE IF NOT EXISTS company_members (
             id          SERIAL PRIMARY KEY,
@@ -1910,6 +1909,7 @@ const companyTablesReady = (async () => {
             UNIQUE(company_id, discord_id)
         );
     `);
+    await schemaQuery(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS salary BIGINT DEFAULT 0`);
 })();
 
 async function createPendingCompany(data) {
