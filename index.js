@@ -5166,10 +5166,6 @@ client.on('messageDelete', async (message) => {
 });
 
 client.on('error', (err) => console.error('Discord client error:', err));
-process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
-process.on('uncaughtException',  (err) => console.error('Uncaught exception:', err));
-process.on('SIGTERM', () => { console.log('SIGTERM received — exiting.'); process.exit(0); });
-process.on('SIGINT',  () => { console.log('SIGINT received — exiting.');  process.exit(0); });
 
 // ── فحص دوري كل دقيقة لرفع المخالفات المنتهية ──────────────────────────
 setInterval(async () => {
