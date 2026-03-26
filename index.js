@@ -5228,4 +5228,6 @@ http.createServer((req, res) => {
     res.end('OK');
 }).listen(process.env.PORT || 3000);
 
-client.login(process.env.DISCORD_TOKEN);
+db.initAllTables()
+    .then(() => client.login(process.env.DISCORD_TOKEN))
+    .catch(err => { console.error('❌ فشل تهيئة البوت:', err); process.exit(1); });

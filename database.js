@@ -191,7 +191,7 @@ async function initCoreDB() {
         );
     `);
 }
-initCoreDB().catch(console.error);
+// جميع الجداول تُهيَّأ عبر initAllTables() عند بدء التشغيل
 
 async function ensureUser(discordId, username) {
     await query(
@@ -611,14 +611,14 @@ async function getXTimeline(limit = 10) {
 }
 
 // x_posts migrations for retweet/reply columns
-(async () => {
+async function migrateXPosts() {
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets  INTEGER DEFAULT 0`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies   INTEGER DEFAULT 0`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type      TEXT DEFAULT 'tweet'`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`);
-})().catch(console.error);
+}
 
 async function likePost(postId) {
     const res = await query(
@@ -779,7 +779,7 @@ async function initPropertiesTable() {
         )
     `);
 }
-initPropertiesTable().catch(console.error);
+
 
 async function initAdminRanksTable() {
     await query(`
@@ -801,7 +801,7 @@ async function initAdminRanksTable() {
         )
     `);
 }
-initAdminRanksTable().catch(console.error);
+
 
 async function getRankTypes() {
     const res = await query('SELECT * FROM rank_types ORDER BY position ASC, id ASC');
@@ -866,7 +866,7 @@ async function initEquipmentTable() {
         )
     `);
 }
-initEquipmentTable().catch(console.error);
+
 
 async function addEquipmentItem(name, price, description) {
     const res = await query(
@@ -918,7 +918,7 @@ async function initMarketTable() {
         )
     `);
 }
-initMarketTable().catch(console.error);
+
 
 async function addMarketItem(name, price, description) {
     const res = await query(
@@ -969,7 +969,7 @@ async function initBlackMarketTable() {
         )
     `);
 }
-initBlackMarketTable().catch(console.error);
+
 
 async function addBlackMarketItem(name, price) {
     const res = await query(
@@ -1331,7 +1331,7 @@ async function initJobTables() {
         );
     }
 }
-initJobTables().catch(console.error);
+
 
 // ─── CASES SYSTEM ────────────────────────────────────────────────────────────
 
@@ -1367,7 +1367,7 @@ async function initCasesTable() {
         )
     `);
 }
-initCasesTable().catch(console.error);
+
 
 async function createCase(plaintiffId, plaintiffName, defendant, title, description, evidence, lawyerFee = '') {
     const count  = await query('SELECT COUNT(*) FROM cases');
@@ -1499,7 +1499,7 @@ async function initLawyerRequestsTable() {
         )
     `);
 }
-initLawyerRequestsTable().catch(console.error);
+
 
 async function createLawyerRequest(caseId, caseNumber, caseTitle, plaintiffId, plaintiffName, lawyerId) {
     await query(`DELETE FROM lawyer_requests WHERE case_id=$1`, [caseId]);
@@ -1538,7 +1538,7 @@ async function initJudgesTable() {
         )
     `);
 }
-initJudgesTable().catch(console.error);
+
 
 async function getJudges() {
     const res = await query('SELECT * FROM judges ORDER BY judge_name ASC');
@@ -1570,7 +1570,7 @@ async function initLawyersTable() {
         )
     `);
 }
-initLawyersTable().catch(console.error);
+
 
 async function getLawyers() {
     const res = await query('SELECT * FROM lawyers ORDER BY lawyer_name ASC');
@@ -1743,6 +1743,7 @@ module.exports = {
     createOpenTicket, getOpenTicketByChannel, removeOpenTicket,
     addStaffActivity, addStaffManualPoints, getStaffActivity, getAllStaffActivity,
     cuffPlayer, uncuffPlayer, isCuffed,
+    initAllTables,
 };
 
 /* ─── نظام الكلبشة ─────────────────────────────────────────────────────── */
@@ -1772,7 +1773,7 @@ async function initCuffedTable() {
         );
     `);
 }
-initCuffedTable().catch(console.error);
+
 
 /* ─── جدول آخر تجميع (لمنع التكرار) ─── */
 async function initGatheringTable() {
@@ -1784,7 +1785,7 @@ async function initGatheringTable() {
         );
     `);
 }
-initGatheringTable().catch(console.error);
+
 
 async function getLastGathered(userId) {
     const res = await pool.query('SELECT resource FROM gathering_last WHERE user_id=$1', [userId]);
@@ -1823,7 +1824,7 @@ async function initViolationsTable() {
     // إضافة العمود إن لم يكن موجوداً في جداول قديمة
     await pool.query(`ALTER TABLE violations ADD COLUMN IF NOT EXISTS saved_roles TEXT NOT NULL DEFAULT '[]';`);
 }
-initViolationsTable().catch(console.error);
+
 
 async function addViolation(userId, adminId, reason, expiresAt, savedRoles = []) {
     // احذف المخالفة القديمة إن وُجدت أولاً
@@ -1861,7 +1862,7 @@ async function initActivationTable() {
         );
     `);
 }
-initActivationTable().catch(console.error);
+
 
 async function createActivationRequest(userId, username, sonyId) {
     await pool.query(
@@ -1884,7 +1885,7 @@ async function deleteActivationRequest(id) {
 }
 
 /* ─── جداول التكتات ─── */
-(async () => {
+async function initTicketTables() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ticket_types (
             id         SERIAL PRIMARY KEY,
@@ -1902,7 +1903,7 @@ async function deleteActivationRequest(id) {
         );
     `);
     await pool.query(`ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS role_id TEXT`);
-})().catch(console.error);
+}
 
 async function addTicketType(name, emoji, roleId = null) {
     const res = await pool.query(
@@ -1941,7 +1942,7 @@ async function removeOpenTicket(channelId) {
 }
 
 /* ─── جدول نقاط الإدارة ─── */
-(async () => {
+async function initStaffActivityTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS staff_activity (
             discord_id    VARCHAR PRIMARY KEY,
@@ -1951,7 +1952,7 @@ async function removeOpenTicket(channelId) {
             manual_points INT DEFAULT 0
         )
     `);
-})().catch(console.error);
+}
 
 async function addStaffActivity(discordId, field) {
     const allowed = ['trips_count', 'gmc_count', 'tickets_count'];
@@ -1989,7 +1990,7 @@ async function getAllStaffActivity() {
 }
 
 /* ─── جداول نظام الشركات ─── */
-(async () => {
+async function initCompanyTables() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS pending_companies (
             id               SERIAL PRIMARY KEY,
@@ -2048,7 +2049,7 @@ async function getAllStaffActivity() {
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function createPendingCompany(data) {
     const res = await query(
@@ -2220,7 +2221,7 @@ async function dissolveCompany(companyId) {
 }
 
 /* ─── جدول أزرار الأولوية ─── */
-(async () => {
+async function initPriorityButtonsTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS priority_buttons (
             id          SERIAL PRIMARY KEY,
@@ -2229,9 +2230,9 @@ async function dissolveCompany(companyId) {
             style       TEXT NOT NULL DEFAULT 'Primary'
         );
     `);
-})().catch(console.error);
+}
 
-(async () => {
+async function initMinistryDutyTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ministry_duty (
             discord_id  TEXT PRIMARY KEY,
@@ -2239,7 +2240,7 @@ async function dissolveCompany(companyId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function setMinistryDuty(discordId, status) {
     await pool.query(
@@ -2254,7 +2255,7 @@ async function getMinistryDuty(discordId) {
 }
 
 /* ─── جدول الهويات المزيفة ─── */
-(async () => {
+async function initFakeIdentitiesTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS fake_identities (
             id          SERIAL PRIMARY KEY,
@@ -2266,7 +2267,7 @@ async function getMinistryDuty(discordId) {
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function createFakeIdentity(targetId, issuerId, fakeName, fakeIban, expiresAt) {
     await pool.query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
@@ -2286,7 +2287,7 @@ async function deleteFakeIdentity(targetId) {
 }
 
 /* ─── جدول حضور CIA ─── */
-(async () => {
+async function initCiaDutyTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS cia_duty (
             discord_id  TEXT PRIMARY KEY,
@@ -2294,7 +2295,7 @@ async function deleteFakeIdentity(targetId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function setCiaDuty(discordId, status) {
     await pool.query(
@@ -2328,4 +2329,31 @@ async function removePriorityButton(id) {
 async function getPriorityButtons() {
     const res = await pool.query(`SELECT * FROM priority_buttons ORDER BY id`);
     return res.rows;
+}
+
+/* ─── تهيئة جميع جداول قاعدة البيانات (يجب الانتظار قبل client.login) ── */
+async function initAllTables() {
+    await initCoreDB();
+    await migrateXPosts();
+    await initPropertiesTable();
+    await initAdminRanksTable();
+    await initEquipmentTable();
+    await initMarketTable();
+    await initBlackMarketTable();
+    await initJobTables();
+    await initCasesTable();
+    await initLawyerRequestsTable();
+    await initJudgesTable();
+    await initLawyersTable();
+    await initCuffedTable();
+    await initGatheringTable();
+    await initViolationsTable();
+    await initActivationTable();
+    await initTicketTables();
+    await initStaffActivityTable();
+    await initCompanyTables();
+    await initPriorityButtonsTable();
+    await initMinistryDutyTable();
+    await initFakeIdentitiesTable();
+    await initCiaDutyTable();
 }
