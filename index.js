@@ -1102,6 +1102,62 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
+        // ── CIA: ملفات المواطنين الكاملة ─────────────────────────────────────────
+        if (interaction.customId === 'cia_citizen_files_btn') {
+            try {
+                const ciaChefRoleId = await db.getConfig('cia_chef_role');
+                if (ciaChefRoleId && !interaction.member.roles.cache.has(ciaChefRoleId))
+                    return interaction.reply({ content: '🔒 هذا الزر لـ CIA Chef فقط.', flags: 64 });
+
+                await interaction.deferReply({ flags: 64 });
+                const allIdentities = await db.getAllActiveIdentities();
+
+                if (!allIdentities.length)
+                    return interaction.editReply({ content: '📭 لا يوجد مواطنون مسجلون حالياً.' });
+
+                const CHUNK = 5;
+                const embeds = [];
+                for (let i = 0; i < allIdentities.length; i += CHUNK) {
+                    const slice = allIdentities.slice(i, i + CHUNK);
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📂 ملفات المواطنين — ${i + 1} إلى ${Math.min(i + CHUNK, allIdentities.length)} من ${allIdentities.length}`)
+                        .setColor(0x0D1B2A)
+                        .setTimestamp();
+
+                    let desc = '';
+                    for (const p of slice) {
+                        const fullName   = [p.character_name, p.family_name].filter(Boolean).join(' ') || '—';
+                        const gender     = p.gender     || '—';
+                        const birthDate  = p.birth_date  || '—';
+                        const birthPlace = p.birth_place || '—';
+                        const violation  = await db.getViolationByUserId(p.discord_id);
+                        const sawabiq    = violation
+                            ? `⚠️ **${violation.reason}** (تنتهي: <t:${Math.floor(new Date(violation.expires_at).getTime() / 1000)}:R>)`
+                            : '✅ لا يوجد سوابق';
+
+                        desc +=
+                            `👤 **${fullName}** — <@${p.discord_id}>\n` +
+                            `🪪 رقم الهوية: \`${p.iban}\`\n` +
+                            `⚧ الجنس: ${gender}\n` +
+                            `🎂 تاريخ الميلاد: ${birthDate}\n` +
+                            `📍 مكان الميلاد: ${birthPlace}\n` +
+                            `📌 السوابق: ${sawabiq}\n\n`;
+                    }
+                    embed.setDescription(desc.slice(0, 4000));
+                    embeds.push(embed);
+                }
+
+                await interaction.editReply({ embeds: embeds.slice(0, 10) });
+            } catch (e) {
+                console.error('[CIA CITIZEN FILES ERROR]', e);
+                if (!interaction.replied && !interaction.deferred)
+                    interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+                else
+                    interaction.editReply({ content: '❌ حدث خطأ.' });
+            }
+            return;
+        }
+
         // ── كشف ملفات المواطنين ──────────────────────────────────────────────────
         if (interaction.customId === 'security_files_btn') {
             try {
