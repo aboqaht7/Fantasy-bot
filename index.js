@@ -38,8 +38,12 @@ const client = new Client({
 client.commands = new Collection();
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
 for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.name, command);
+    try {
+        const command = require(`./commands/${file}`);
+        if (command?.name) client.commands.set(command.name, command);
+    } catch (e) {
+        console.error(`[CMD LOAD ERROR] ${file}:`, e.message);
+    }
 }
 
 /* ── منع معالجة نفس التفاعل مرتين (مشكلة Gateway) ────────────────────── */
@@ -107,19 +111,28 @@ client.once('clientReady', async () => {
     }
 
     // ── تسجيل السلاش كوماند تلقائياً عند بدء التشغيل ──────────────────────
-    try {
+    if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
+        console.warn('⚠️ CLIENT_ID أو GUILD_ID غير مضبوطة — لن يتم تسجيل السلاش كوماند');
+    } else {
         const slashCommands = [];
         for (const command of client.commands.values()) {
-            if (command.data) slashCommands.push(command.data.toJSON());
+            if (!command.data) continue;
+            try {
+                slashCommands.push(command.data.toJSON());
+            } catch (e) {
+                console.error(`[SLASH REG ERROR] فشل تحويل بيانات الأمر "${command.name}":`, e.message);
+            }
         }
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        await rest.put(
-            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-            { body: slashCommands },
-        );
-        console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
-    } catch (e) {
-        console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
+        try {
+            const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+            await rest.put(
+                Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+                { body: slashCommands },
+            );
+            console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
+        } catch (e) {
+            console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
+        }
     }
 
     setInterval(async () => {
@@ -5042,7 +5055,7 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    if (!interaction.isCommand()) return;
+    if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
     try {
