@@ -5,7 +5,40 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
+async function runBootstrapQuery(text) {
+    const client = await pool.connect();
+    try {
+        await client.query(text);
+    } finally {
+        client.release();
+    }
+}
+
+const bootstrapReady = (async () => {
+    await runBootstrapQuery(`
+        CREATE TABLE IF NOT EXISTS server_config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    `);
+    await runBootstrapQuery(`
+        CREATE TABLE IF NOT EXISTS x_posts (
+            id SERIAL PRIMARY KEY,
+            discord_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            x_username TEXT,
+            content TEXT NOT NULL,
+            likes INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    `);
+})().catch((error) => {
+    console.error('Bootstrap schema error:', error);
+    throw error;
+});
+
 async function query(text, params) {
+    await bootstrapReady;
     const client = await pool.connect();
     try {
         const res = await client.query(text, params);
