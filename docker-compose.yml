@@ -1,0 +1,40 @@
+version: "3.9"
+
+# ─── تشغيل البوت محلياً مع قاعدة بيانات PostgreSQL ─────────────────────────
+
+services:
+  # ─── قاعدة البيانات ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fantasybot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-fantasypass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── البوت ────────────────────────────────────────────────────────────────
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      CLIENT_ID: ${CLIENT_ID}
+      GUILD_ID: ${GUILD_ID}
+      PREFIX: ${PREFIX:--}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: postgresql://postgres:${DB_PASSWORD:-fantasypass}@postgres:5432/fantasybot
+    ports:
+      - "${PORT:-3000}:3000"
+
+volumes:
+  postgres_data:
