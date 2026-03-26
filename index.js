@@ -123,15 +123,19 @@ client.once('clientReady', async () => {
                 console.error(`[SLASH REG ERROR] فشل تحويل بيانات الأمر "${command.name}":`, e.message);
             }
         }
-        try {
-            const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-            await rest.put(
-                Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-                { body: slashCommands },
-            );
-            console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
-        } catch (e) {
-            console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
+        if (slashCommands.length === 0) {
+            console.warn('⚠️ لم يُعثر على أي سلاش كوماند صالح — تم تخطي التسجيل');
+        } else {
+            try {
+                const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+                await rest.put(
+                    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+                    { body: slashCommands },
+                );
+                console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
+            } catch (e) {
+                console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
+            }
         }
     }
 
