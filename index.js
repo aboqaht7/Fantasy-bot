@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const fs = require('fs');
 
 /* ── منع تشغيل أكثر من نسخة واحدة ─────────────────────────────────────── */
@@ -28,7 +30,7 @@ const {
     AuditLogEvent, Partials
 } = require('discord.js');
 const db = require('./database');
-require('dotenv').config();
+const { deployCommands } = require('./deploy-commands');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
@@ -56,6 +58,20 @@ const trackingSessions = new Map();
 
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
+
+    try {
+        await db.waitForBootstrap();
+        console.log('✅ تم التحقق من جاهزية قاعدة البيانات');
+    } catch (e) {
+        console.error('❌ فشل تهيئة قاعدة البيانات:', e.message || e);
+        return;
+    }
+
+    try {
+        await deployCommands();
+    } catch (e) {
+        console.error('❌ خطأ في تسجيل أوامر Slash:', e.message || e);
+    }
 
     // ── ضبط رسائل الرحلات الافتراضية ──────────────────────────────────────
     try {
@@ -4676,7 +4692,7 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    if (!interaction.isCommand()) return;
+    if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
     try {

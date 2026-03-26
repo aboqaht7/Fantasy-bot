@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { Pool } = require('pg');
 
 const pool = new Pool({
@@ -5,7 +7,70 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
+async function runBootstrapQuery(client, text) {
+    await client.query(text);
+}
+
+const xPostsMigrationQueries = [
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets INTEGER DEFAULT 0`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies INTEGER DEFAULT 0`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'tweet'`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`,
+    `ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`,
+];
+
+const bootstrapReady = (async () => {
+    const client = await pool.connect();
+    try {
+        await runBootstrapQuery(client, `
+            CREATE TABLE IF NOT EXISTS server_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        `);
+        await runBootstrapQuery(client, `
+            CREATE TABLE IF NOT EXISTS x_posts (
+                id SERIAL PRIMARY KEY,
+                discord_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                x_username TEXT,
+                content TEXT NOT NULL,
+                likes INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        for (const migrationQuery of xPostsMigrationQueries) {
+            await runBootstrapQuery(client, migrationQuery);
+        }
+    } finally {
+        client.release();
+    }
+})().catch((error) => {
+    console.error('Failed to create required database tables (server_config, x_posts):', error);
+    throw error;
+});
+
+let schemaReady = bootstrapReady;
+
+async function waitForBootstrap() {
+    await schemaReady;
+}
+
+async function schemaQuery(text, params) {
+    await bootstrapReady;
+    const client = await pool.connect();
+    try {
+        const res = await client.query(text, params);
+        return res;
+    } finally {
+        client.release();
+    }
+}
+
 async function query(text, params) {
+    await schemaReady;
     const client = await pool.connect();
     try {
         const res = await client.query(text, params);
@@ -432,16 +497,6 @@ async function getXTimeline(limit = 10) {
     return res.rows;
 }
 
-// x_posts migrations for retweet/reply columns
-(async () => {
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets  INTEGER DEFAULT 0`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies   INTEGER DEFAULT 0`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type      TEXT DEFAULT 'tweet'`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`);
-    await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`);
-})().catch(console.error);
-
 async function likePost(postId) {
     const res = await query(
         'UPDATE x_posts SET likes = likes + 1 WHERE id = $1 RETURNING likes',
@@ -592,7 +647,7 @@ async function removeVehicle(discordId, plate) {
 }
 
 async function initPropertiesTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS properties (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -601,10 +656,10 @@ async function initPropertiesTable() {
         )
     `);
 }
-initPropertiesTable().catch(console.error);
+const propertiesTableReady = initPropertiesTable();
 
 async function initAdminRanksTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS admin_ranks (
             discord_id VARCHAR PRIMARY KEY,
             username   VARCHAR,
@@ -614,7 +669,7 @@ async function initAdminRanksTable() {
             assigned_at TIMESTAMP DEFAULT NOW()
         )
     `);
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS rank_types (
             id       SERIAL PRIMARY KEY,
             name     TEXT NOT NULL UNIQUE,
@@ -623,7 +678,7 @@ async function initAdminRanksTable() {
         )
     `);
 }
-initAdminRanksTable().catch(console.error);
+const adminRanksTableReady = initAdminRanksTable();
 
 async function getRankTypes() {
     const res = await query('SELECT * FROM rank_types ORDER BY position ASC, id ASC');
@@ -678,7 +733,7 @@ async function updateAdminPoints(discordId, delta) {
 }
 
 async function initEquipmentTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS equipment_items (
             id          SERIAL PRIMARY KEY,
             name        TEXT NOT NULL,
@@ -688,7 +743,7 @@ async function initEquipmentTable() {
         )
     `);
 }
-initEquipmentTable().catch(console.error);
+const equipmentTableReady = initEquipmentTable();
 
 async function addEquipmentItem(name, price, description) {
     const res = await query(
@@ -730,7 +785,7 @@ async function updateEquipmentItem(id, fields) {
 }
 
 async function initMarketTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS market_items (
             id          SERIAL PRIMARY KEY,
             name        TEXT NOT NULL,
@@ -740,7 +795,7 @@ async function initMarketTable() {
         )
     `);
 }
-initMarketTable().catch(console.error);
+const marketTableReady = initMarketTable();
 
 async function addMarketItem(name, price, description) {
     const res = await query(
@@ -783,7 +838,7 @@ async function updateMarketItem(id, fields) {
 }
 
 async function initBlackMarketTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS black_market (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -791,7 +846,7 @@ async function initBlackMarketTable() {
         )
     `);
 }
-initBlackMarketTable().catch(console.error);
+const blackMarketTableReady = initBlackMarketTable();
 
 async function addBlackMarketItem(name, price) {
     const res = await query(
@@ -953,7 +1008,7 @@ async function checkLoginAndIdentity(discordId, { allowCuffed = false } = {}) {
     );
     if (!res.rows[0]?.character_name) return 'ماسجلت دخولك؟سجل دخولك يالامير بعدين تعال';
     if (!allowCuffed) {
-        const cuffed = await pool.query('SELECT 1 FROM cuffed_players WHERE discord_id=$1', [discordId]);
+        const cuffed = await query('SELECT 1 FROM cuffed_players WHERE discord_id=$1', [discordId]);
         if (cuffed.rows[0]) return '🔗 أنت مكبّل ولا تستطيع تنفيذ هذا الإجراء.';
     }
     return null;
@@ -1131,14 +1186,14 @@ const DEFAULT_PRICES = {
 };
 
 async function initJobTables() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS job_prices (
             item_name  TEXT PRIMARY KEY,
             price      INTEGER NOT NULL,
             updated_at TIMESTAMP DEFAULT NOW()
         )
     `);
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS job_cooldowns (
             discord_id TEXT NOT NULL,
             job_name   TEXT NOT NULL,
@@ -1147,13 +1202,13 @@ async function initJobTables() {
         )
     `);
     for (const [item, price] of Object.entries(DEFAULT_PRICES)) {
-        await query(
+        await schemaQuery(
             `INSERT INTO job_prices (item_name, price) VALUES ($1,$2) ON CONFLICT (item_name) DO NOTHING`,
             [item, price]
         );
     }
 }
-initJobTables().catch(console.error);
+const jobTablesReady = initJobTables();
 
 // ─── CASES SYSTEM ────────────────────────────────────────────────────────────
 
@@ -1166,7 +1221,7 @@ const CASE_STATUS = {
 };
 
 async function initCasesTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS cases (
             id             SERIAL PRIMARY KEY,
             case_number    TEXT UNIQUE NOT NULL,
@@ -1189,7 +1244,7 @@ async function initCasesTable() {
         )
     `);
 }
-initCasesTable().catch(console.error);
+const casesTableReady = initCasesTable();
 
 async function createCase(plaintiffId, plaintiffName, defendant, title, description, evidence, lawyerFee = '') {
     const count  = await query('SELECT COUNT(*) FROM cases');
@@ -1307,7 +1362,7 @@ async function abandonCase(caseId, lawyerId, plaintiffId, refundAmount) {
 
 // ─── LAWYER REQUESTS ──────────────────────────────────────────────────────────
 async function initLawyerRequestsTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS lawyer_requests (
             id             SERIAL PRIMARY KEY,
             case_id        INTEGER NOT NULL,
@@ -1321,7 +1376,7 @@ async function initLawyerRequestsTable() {
         )
     `);
 }
-initLawyerRequestsTable().catch(console.error);
+const lawyerRequestsTableReady = initLawyerRequestsTable();
 
 async function createLawyerRequest(caseId, caseNumber, caseTitle, plaintiffId, plaintiffName, lawyerId) {
     await query(`DELETE FROM lawyer_requests WHERE case_id=$1`, [caseId]);
@@ -1352,7 +1407,7 @@ async function updateLawyerRequest(id, status) {
 
 // ─── JUDGES REGISTRY ──────────────────────────────────────────────────────────
 async function initJudgesTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS judges (
             discord_id   TEXT PRIMARY KEY,
             judge_name   TEXT NOT NULL,
@@ -1360,7 +1415,7 @@ async function initJudgesTable() {
         )
     `);
 }
-initJudgesTable().catch(console.error);
+const judgesTableReady = initJudgesTable();
 
 async function getJudges() {
     const res = await query('SELECT * FROM judges ORDER BY judge_name ASC');
@@ -1384,7 +1439,7 @@ async function getJudgeById(discordId) {
 
 // ─── LAWYERS REGISTRY ─────────────────────────────────────────────────────────
 async function initLawyersTable() {
-    await query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS lawyers (
             discord_id   TEXT PRIMARY KEY,
             lawyer_name  TEXT NOT NULL,
@@ -1392,7 +1447,7 @@ async function initLawyersTable() {
         )
     `);
 }
-initLawyersTable().catch(console.error);
+const lawyersTableReady = initLawyersTable();
 
 async function getLawyers() {
     const res = await query('SELECT * FROM lawyers ORDER BY lawyer_name ASC');
@@ -1508,7 +1563,7 @@ async function sellJobItems(discordId) {
 }
 
 module.exports = {
-    query, ensureUser, generateIban,
+    query, waitForBootstrap, ensureUser, generateIban,
     unlockSlot3, isSlot3Unlocked,
     updateIban,
     getConfig, setConfig, logoutAllUsers, addCharacterLog, getCharacterLogs,
@@ -1568,7 +1623,7 @@ module.exports = {
 
 /* ─── نظام الكلبشة ─────────────────────────────────────────────────────── */
 async function cuffPlayer(targetId, cuffedById) {
-    await pool.query(`
+    await query(`
         INSERT INTO cuffed_players (discord_id, cuffed_by)
         VALUES ($1, $2)
         ON CONFLICT (discord_id) DO UPDATE SET cuffed_by = $2, cuffed_at = NOW()
@@ -1576,16 +1631,16 @@ async function cuffPlayer(targetId, cuffedById) {
 }
 
 async function uncuffPlayer(targetId) {
-    await pool.query('DELETE FROM cuffed_players WHERE discord_id = $1', [targetId]);
+    await query('DELETE FROM cuffed_players WHERE discord_id = $1', [targetId]);
 }
 
 async function isCuffed(discordId) {
-    const res = await pool.query('SELECT cuffed_by, cuffed_at FROM cuffed_players WHERE discord_id = $1', [discordId]);
+    const res = await query('SELECT cuffed_by, cuffed_at FROM cuffed_players WHERE discord_id = $1', [discordId]);
     return res.rows[0] || null;
 }
 
 async function initCuffedTable() {
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS cuffed_players (
             discord_id  VARCHAR PRIMARY KEY,
             cuffed_by   VARCHAR NOT NULL,
@@ -1593,11 +1648,11 @@ async function initCuffedTable() {
         );
     `);
 }
-initCuffedTable().catch(console.error);
+const cuffedTableReady = initCuffedTable();
 
 /* ─── جدول آخر تجميع (لمنع التكرار) ─── */
 async function initGatheringTable() {
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS gathering_last (
             user_id     TEXT PRIMARY KEY,
             resource    TEXT NOT NULL,
@@ -1605,15 +1660,15 @@ async function initGatheringTable() {
         );
     `);
 }
-initGatheringTable().catch(console.error);
+const gatheringTableReady = initGatheringTable();
 
 async function getLastGathered(userId) {
-    const res = await pool.query('SELECT resource FROM gathering_last WHERE user_id=$1', [userId]);
+    const res = await query('SELECT resource FROM gathering_last WHERE user_id=$1', [userId]);
     return res.rows[0]?.resource || null;
 }
 
 async function setLastGathered(userId, resource) {
-    await pool.query(
+    await query(
         `INSERT INTO gathering_last (user_id, resource, updated_at) VALUES ($1, $2, NOW())
          ON CONFLICT (user_id) DO UPDATE SET resource=$2, updated_at=NOW()`,
         [userId, resource]
@@ -1621,7 +1676,7 @@ async function setLastGathered(userId, resource) {
 }
 
 async function getItemQty(discordId, itemName) {
-    const res = await pool.query(
+    const res = await query(
         'SELECT quantity FROM inventory WHERE discord_id=$1 AND LOWER(item_name)=LOWER($2)',
         [discordId, itemName]
     );
@@ -1630,7 +1685,7 @@ async function getItemQty(discordId, itemName) {
 
 /* ─── جدول المخالفات ─── */
 async function initViolationsTable() {
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS violations (
             id          SERIAL PRIMARY KEY,
             user_id     TEXT NOT NULL,
@@ -1642,14 +1697,14 @@ async function initViolationsTable() {
         );
     `);
     // إضافة العمود إن لم يكن موجوداً في جداول قديمة
-    await pool.query(`ALTER TABLE violations ADD COLUMN IF NOT EXISTS saved_roles TEXT NOT NULL DEFAULT '[]';`);
+    await schemaQuery(`ALTER TABLE violations ADD COLUMN IF NOT EXISTS saved_roles TEXT NOT NULL DEFAULT '[]';`);
 }
-initViolationsTable().catch(console.error);
+const violationsTableReady = initViolationsTable();
 
 async function addViolation(userId, adminId, reason, expiresAt, savedRoles = []) {
     // احذف المخالفة القديمة إن وُجدت أولاً
-    await pool.query(`DELETE FROM violations WHERE user_id=$1`, [userId]);
-    await pool.query(
+    await query(`DELETE FROM violations WHERE user_id=$1`, [userId]);
+    await query(
         `INSERT INTO violations (user_id, admin_id, reason, expires_at, saved_roles)
          VALUES ($1, $2, $3, $4, $5)`,
         [userId, adminId, reason, expiresAt, JSON.stringify(savedRoles)]
@@ -1657,22 +1712,22 @@ async function addViolation(userId, adminId, reason, expiresAt, savedRoles = [])
 }
 
 async function removeViolation(userId) {
-    await pool.query(`DELETE FROM violations WHERE user_id = $1`, [userId]);
+    await query(`DELETE FROM violations WHERE user_id = $1`, [userId]);
 }
 
 async function getExpiredViolations() {
-    const res = await pool.query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
+    const res = await query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
     return res.rows;
 }
 
 async function getViolationByUserId(userId) {
-    const res = await pool.query(`SELECT * FROM violations WHERE user_id = $1 LIMIT 1`, [userId]);
+    const res = await query(`SELECT * FROM violations WHERE user_id = $1 LIMIT 1`, [userId]);
     return res.rows[0] || null;
 }
 
 /* ─── جدول طلبات التفعيل ─── */
 async function initActivationTable() {
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS activation_requests (
             id         SERIAL PRIMARY KEY,
             user_id    TEXT NOT NULL UNIQUE,
@@ -1682,31 +1737,31 @@ async function initActivationTable() {
         );
     `);
 }
-initActivationTable().catch(console.error);
+const activationTableReady = initActivationTable();
 
 async function createActivationRequest(userId, username, sonyId) {
-    await pool.query(
+    await query(
         `INSERT INTO activation_requests (user_id, username, sony_id)
          VALUES ($1, $2, $3)
          ON CONFLICT (user_id) DO UPDATE SET sony_id=$3, username=$2, created_at=NOW()`,
         [userId, username, sonyId]
     );
-    const res = await pool.query(`SELECT * FROM activation_requests WHERE user_id=$1`, [userId]);
+    const res = await query(`SELECT * FROM activation_requests WHERE user_id=$1`, [userId]);
     return res.rows[0];
 }
 
 async function getActivationRequest(id) {
-    const res = await pool.query(`SELECT * FROM activation_requests WHERE id=$1`, [id]);
+    const res = await query(`SELECT * FROM activation_requests WHERE id=$1`, [id]);
     return res.rows[0] || null;
 }
 
 async function deleteActivationRequest(id) {
-    await pool.query(`DELETE FROM activation_requests WHERE id=$1`, [id]);
+    await query(`DELETE FROM activation_requests WHERE id=$1`, [id]);
 }
 
 /* ─── جداول التكتات ─── */
-(async () => {
-    await pool.query(`
+const ticketTablesReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS ticket_types (
             id         SERIAL PRIMARY KEY,
             name       TEXT NOT NULL,
@@ -1722,11 +1777,11 @@ async function deleteActivationRequest(id) {
             created_at TIMESTAMP DEFAULT NOW()
         );
     `);
-    await pool.query(`ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS role_id TEXT`);
-})().catch(console.error);
+    await schemaQuery(`ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS role_id TEXT`);
+})();
 
 async function addTicketType(name, emoji, roleId = null) {
-    const res = await pool.query(
+    const res = await query(
         `INSERT INTO ticket_types (name, emoji, role_id) VALUES ($1, $2, $3) RETURNING *`,
         [name, emoji, roleId]
     );
@@ -1734,17 +1789,17 @@ async function addTicketType(name, emoji, roleId = null) {
 }
 
 async function removeTicketType(id) {
-    const res = await pool.query(`DELETE FROM ticket_types WHERE id=$1 RETURNING *`, [id]);
+    const res = await query(`DELETE FROM ticket_types WHERE id=$1 RETURNING *`, [id]);
     return res.rows[0] || null;
 }
 
 async function getTicketTypes() {
-    const res = await pool.query(`SELECT * FROM ticket_types ORDER BY id`);
+    const res = await query(`SELECT * FROM ticket_types ORDER BY id`);
     return res.rows;
 }
 
 async function createOpenTicket(discordId, channelId, typeId, typeName) {
-    const res = await pool.query(
+    const res = await query(
         `INSERT INTO open_tickets (discord_id, channel_id, type_id, type_name)
          VALUES ($1, $2, $3, $4) ON CONFLICT (channel_id) DO NOTHING RETURNING *`,
         [discordId, channelId, typeId, typeName]
@@ -1753,17 +1808,17 @@ async function createOpenTicket(discordId, channelId, typeId, typeName) {
 }
 
 async function getOpenTicketByChannel(channelId) {
-    const res = await pool.query(`SELECT * FROM open_tickets WHERE channel_id=$1`, [channelId]);
+    const res = await query(`SELECT * FROM open_tickets WHERE channel_id=$1`, [channelId]);
     return res.rows[0] || null;
 }
 
 async function removeOpenTicket(channelId) {
-    await pool.query(`DELETE FROM open_tickets WHERE channel_id=$1`, [channelId]);
+    await query(`DELETE FROM open_tickets WHERE channel_id=$1`, [channelId]);
 }
 
 /* ─── جدول نقاط الإدارة ─── */
-(async () => {
-    await pool.query(`
+const staffActivityTableReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS staff_activity (
             discord_id    VARCHAR PRIMARY KEY,
             trips_count   INT DEFAULT 0,
@@ -1772,12 +1827,12 @@ async function removeOpenTicket(channelId) {
             manual_points INT DEFAULT 0
         )
     `);
-})().catch(console.error);
+})();
 
 async function addStaffActivity(discordId, field) {
     const allowed = ['trips_count', 'gmc_count', 'tickets_count'];
     if (!allowed.includes(field)) return;
-    await pool.query(`
+    await query(`
         INSERT INTO staff_activity (discord_id, ${field})
         VALUES ($1, 1)
         ON CONFLICT (discord_id)
@@ -1786,7 +1841,7 @@ async function addStaffActivity(discordId, field) {
 }
 
 async function addStaffManualPoints(discordId, amount) {
-    await pool.query(`
+    await query(`
         INSERT INTO staff_activity (discord_id, manual_points)
         VALUES ($1, $2)
         ON CONFLICT (discord_id)
@@ -1795,12 +1850,12 @@ async function addStaffManualPoints(discordId, amount) {
 }
 
 async function getStaffActivity(discordId) {
-    const res = await pool.query('SELECT * FROM staff_activity WHERE discord_id=$1', [discordId]);
+    const res = await query('SELECT * FROM staff_activity WHERE discord_id=$1', [discordId]);
     return res.rows[0] || { discord_id: discordId, trips_count: 0, gmc_count: 0, tickets_count: 0, manual_points: 0 };
 }
 
 async function getAllStaffActivity() {
-    const res = await pool.query(`
+    const res = await query(`
         SELECT *,
             (trips_count * 5 + gmc_count * 8 + tickets_count * 5 + manual_points) AS total
         FROM staff_activity
@@ -1810,8 +1865,8 @@ async function getAllStaffActivity() {
 }
 
 /* ─── جداول نظام الشركات ─── */
-(async () => {
-    await pool.query(`
+const companyTablesReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS pending_companies (
             id               SERIAL PRIMARY KEY,
             discord_id       TEXT NOT NULL,
@@ -1827,14 +1882,14 @@ async function getAllStaffActivity() {
             created_at       TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS trade_permits (
             discord_id  TEXT PRIMARY KEY,
             granted_by  TEXT NOT NULL,
             granted_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS companies (
             id               SERIAL PRIMARY KEY,
             name             TEXT UNIQUE NOT NULL,
@@ -1843,8 +1898,7 @@ async function getAllStaffActivity() {
             created_at       TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-    await pool.query(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS salary BIGINT DEFAULT 0`).catch(() => {});
-    await pool.query(`
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS company_members (
             id          SERIAL PRIMARY KEY,
             company_id  INT REFERENCES companies(id) ON DELETE CASCADE,
@@ -1855,7 +1909,8 @@ async function getAllStaffActivity() {
             UNIQUE(company_id, discord_id)
         );
     `);
-})().catch(console.error);
+    await schemaQuery(`ALTER TABLE company_members ADD COLUMN IF NOT EXISTS salary BIGINT DEFAULT 0`);
+})();
 
 async function createPendingCompany(data) {
     const res = await query(
@@ -2000,8 +2055,8 @@ async function dissolveCompany(companyId) {
 }
 
 /* ─── جدول أزرار الأولوية ─── */
-(async () => {
-    await pool.query(`
+const priorityButtonsTableReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS priority_buttons (
             id          SERIAL PRIMARY KEY,
             label       TEXT NOT NULL,
@@ -2009,33 +2064,33 @@ async function dissolveCompany(companyId) {
             style       TEXT NOT NULL DEFAULT 'Primary'
         );
     `);
-})().catch(console.error);
+})();
 
-(async () => {
-    await pool.query(`
+const ministryDutyTableReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS ministry_duty (
             discord_id  TEXT PRIMARY KEY,
             status      TEXT DEFAULT 'off',
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})();
 
 async function setMinistryDuty(discordId, status) {
-    await pool.query(
+    await query(
         `INSERT INTO ministry_duty (discord_id, status, updated_at) VALUES ($1, $2, NOW())
          ON CONFLICT (discord_id) DO UPDATE SET status=$2, updated_at=NOW()`,
         [discordId, status]
     );
 }
 async function getMinistryDuty(discordId) {
-    const res = await pool.query('SELECT * FROM ministry_duty WHERE discord_id=$1', [discordId]);
+    const res = await query('SELECT * FROM ministry_duty WHERE discord_id=$1', [discordId]);
     return res.rows[0] || null;
 }
 
 /* ─── جدول الهويات المزيفة ─── */
-(async () => {
-    await pool.query(`
+const fakeIdentitiesTableReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS fake_identities (
             id          SERIAL PRIMARY KEY,
             target_id   TEXT NOT NULL,
@@ -2046,11 +2101,11 @@ async function getMinistryDuty(discordId) {
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})();
 
 async function createFakeIdentity(targetId, issuerId, fakeName, fakeIban, expiresAt) {
-    await pool.query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
-    const res = await pool.query(
+    await query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
+    const res = await query(
         `INSERT INTO fake_identities (target_id, issuer_id, fake_name, fake_iban, expires_at)
          VALUES ($1, $2, $3, $4, $5) RETURNING *`,
         [targetId, issuerId, fakeName, fakeIban, expiresAt]
@@ -2058,42 +2113,70 @@ async function createFakeIdentity(targetId, issuerId, fakeName, fakeIban, expire
     return res.rows[0];
 }
 async function getFakeIdentity(targetId) {
-    const res = await pool.query(`SELECT * FROM fake_identities WHERE target_id=$1 AND expires_at > NOW()`, [targetId]);
+    const res = await query(`SELECT * FROM fake_identities WHERE target_id=$1 AND expires_at > NOW()`, [targetId]);
     return res.rows[0] || null;
 }
 async function deleteFakeIdentity(targetId) {
-    await pool.query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
+    await query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
 }
 
 /* ─── جدول حضور CIA ─── */
-(async () => {
-    await pool.query(`
+const ciaDutyTableReady = (async () => {
+    await schemaQuery(`
         CREATE TABLE IF NOT EXISTS cia_duty (
             discord_id  TEXT PRIMARY KEY,
             status      TEXT DEFAULT 'off',
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})();
+
+schemaReady = Promise.all([
+    bootstrapReady,
+    propertiesTableReady,
+    adminRanksTableReady,
+    equipmentTableReady,
+    marketTableReady,
+    blackMarketTableReady,
+    jobTablesReady,
+    casesTableReady,
+    lawyerRequestsTableReady,
+    judgesTableReady,
+    lawyersTableReady,
+    cuffedTableReady,
+    gatheringTableReady,
+    violationsTableReady,
+    activationTableReady,
+    ticketTablesReady,
+    staffActivityTableReady,
+    companyTablesReady,
+    priorityButtonsTableReady,
+    ministryDutyTableReady,
+    fakeIdentitiesTableReady,
+    ciaDutyTableReady,
+]).catch((error) => {
+    console.error('Failed to initialize database schema:', error);
+    throw error;
+});
 
 async function setCiaDuty(discordId, status) {
-    await pool.query(
+    await query(
         `INSERT INTO cia_duty (discord_id, status, updated_at) VALUES ($1, $2, NOW())
          ON CONFLICT (discord_id) DO UPDATE SET status=$2, updated_at=NOW()`,
         [discordId, status]
     );
 }
 async function getCiaDuty(discordId) {
-    const res = await pool.query('SELECT * FROM cia_duty WHERE discord_id=$1', [discordId]);
+    const res = await query('SELECT * FROM cia_duty WHERE discord_id=$1', [discordId]);
     return res.rows[0] || null;
 }
 async function getAllActiveCia() {
-    const res = await pool.query(`SELECT * FROM cia_duty WHERE status='on' ORDER BY updated_at ASC`);
+    const res = await query(`SELECT * FROM cia_duty WHERE status='on' ORDER BY updated_at ASC`);
     return res.rows;
 }
 
 async function addPriorityButton(label, priority, style) {
-    const res = await pool.query(
+    const res = await query(
         `INSERT INTO priority_buttons (label, priority, style) VALUES ($1, $2, $3) RETURNING *`,
         [label, priority, style]
     );
@@ -2101,11 +2184,11 @@ async function addPriorityButton(label, priority, style) {
 }
 
 async function removePriorityButton(id) {
-    const res = await pool.query(`DELETE FROM priority_buttons WHERE id=$1 RETURNING *`, [id]);
+    const res = await query(`DELETE FROM priority_buttons WHERE id=$1 RETURNING *`, [id]);
     return res.rows[0] || null;
 }
 
 async function getPriorityButtons() {
-    const res = await pool.query(`SELECT * FROM priority_buttons ORDER BY id`);
+    const res = await query(`SELECT * FROM priority_buttons ORDER BY id`);
     return res.rows;
 }
