@@ -886,6 +886,192 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
+        // ── تصاريح التجارة — إصدار تصريح ──────────────────────────────────────────
+        if (interaction.customId === 'permit_issue_btn') {
+            try {
+                const identity = await db.getActiveIdentity(interaction.user.id);
+                if (!identity)
+                    return interaction.reply({ content: '❌ سجّل دخولك أولاً ثم حاول مجدداً.', flags: 64 });
+
+                const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+                const modal = new ModalBuilder()
+                    .setCustomId('permit_apply_modal')
+                    .setTitle('📋 طلب تصريح تجاري');
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_company_name')
+                            .setLabel('اسم الشركة')
+                            .setStyle(TextInputStyle.Short)
+                            .setPlaceholder('اسم الشركة التي ستؤسسها')
+                            .setRequired(true)
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_business_type')
+                            .setLabel('نوع الأعمال')
+                            .setStyle(TextInputStyle.Short)
+                            .setPlaceholder('مثال: تجارة عقارات، مطاعم، خدمات...')
+                            .setRequired(true)
+                            .setMaxLength(200)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_goals')
+                            .setLabel('أهداف الشركة')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder('اشرح أهداف شركتك بإيجاز')
+                            .setRequired(true)
+                            .setMaxLength(500)
+                    ),
+                );
+
+                await interaction.showModal(modal);
+            } catch (e) {
+                console.error('[PERMIT ISSUE BTN ERROR]', e);
+                if (!interaction.replied) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
+        // ── تصاريح التجارة — عرض تصاريحي ──────────────────────────────────────────
+        if (interaction.customId === 'permit_view_btn') {
+            try {
+                const permits = await db.getPermitApplicationsByUser(interaction.user.id);
+                if (!permits.length)
+                    return interaction.reply({ content: '📭 لا توجد لديك طلبات تصاريح حتى الآن.', flags: 64 });
+
+                const statusEmoji = { pending: '⏳', approved: '✅', rejected: '❌' };
+                const statusLabel = { pending: 'قيد المراجعة', approved: 'مقبول', rejected: 'مرفوض' };
+
+                const lines = permits.map((p, i) =>
+                    `**${i + 1}.** 🏢 ${p.company_name}\n` +
+                    `   ${statusEmoji[p.status] || '❓'} **${statusLabel[p.status] || p.status}**` +
+                    (p.reviewed_at ? ` — <t:${Math.floor(new Date(p.reviewed_at).getTime() / 1000)}:d>` : '')
+                );
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🗂️ تصاريحي التجارية')
+                    .setColor(0x1565C0)
+                    .setDescription(lines.join('\n\n'))
+                    .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                    .setTimestamp();
+
+                await interaction.reply({ embeds: [embed], flags: 64 });
+            } catch (e) {
+                console.error('[PERMIT VIEW BTN ERROR]', e);
+                if (!interaction.replied) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
+        // ── قبول / رفض طلبات التصاريح ──────────────────────────────────────────
+        if (interaction.customId.startsWith('approve_permit_') || interaction.customId.startsWith('reject_permit_')) {
+            const isApprove = interaction.customId.startsWith('approve_permit_');
+            const permitId = parseInt(interaction.customId.replace(isApprove ? 'approve_permit_' : 'reject_permit_', ''));
+            try {
+                const ministryRoleId = await db.getConfig('trade_ministry_role');
+                const isAdminUser = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+                const hasMinistryRole = ministryRoleId && interaction.member.roles.cache.has(ministryRoleId);
+                if (!isAdminUser && !hasMinistryRole)
+                    return interaction.reply({ content: '❌ هذا الزر لمسؤولي وزارة التجارة فقط.', flags: 64 });
+
+                const app = await db.getPermitApplication(permitId);
+                if (!app)
+                    return interaction.reply({ content: '❌ الطلب غير موجود.', flags: 64 });
+                if (app.status !== 'pending')
+                    return interaction.reply({ content: '❌ تمت معالجة هذا الطلب بالفعل.', flags: 64 });
+
+                if (isApprove) {
+                    // خصم 2000 ريال من المتقدم وإضافتها لمن وافق (الوزير)
+                    const PERMIT_FEE = 2000;
+                    const applicantIdentity = await db.getActiveIdentity(app.discord_id);
+                    if (!applicantIdentity || Number(applicantIdentity.balance) < PERMIT_FEE) {
+                        return interaction.reply({
+                            content: `❌ رصيد المتقدم غير كافٍ لخصم رسوم التصريح (\`${PERMIT_FEE.toLocaleString()} ريال\`).`,
+                            flags: 64
+                        });
+                    }
+
+                    // خصم من المتقدم
+                    await db.adminRemoveMoney(applicantIdentity.iban, PERMIT_FEE, 'رسوم التصريح التجاري');
+                    // إضافة للوزير الموافق
+                    const ministerIdentity = await db.getActiveIdentity(interaction.user.id);
+                    if (ministerIdentity) {
+                        await db.adminAddMoney(ministerIdentity.iban, PERMIT_FEE, 'رسوم التصريح التجاري المحصّلة');
+                    }
+
+                    // منح التصريح
+                    await db.grantTradePermit(app.discord_id, interaction.user.id);
+                    await db.updatePermitApplicationStatus(permitId, 'approved', interaction.user.id);
+
+                    const approveEmbed = new EmbedBuilder()
+                        .setTitle('✅ تم قبول طلب التصريح')
+                        .setColor(0x1B5E20)
+                        .addFields(
+                            { name: '👤 المتقدم', value: `<@${app.discord_id}>`, inline: true },
+                            { name: '🏢 الشركة', value: `**${app.company_name}**`, inline: true },
+                            { name: '✅ وافق عليه', value: `<@${interaction.user.id}>`, inline: true },
+                            { name: '💰 الرسوم', value: `\`${PERMIT_FEE.toLocaleString()} ريال\` خُصمت من المتقدم`, inline: false },
+                        )
+                        .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                        .setTimestamp();
+                    await interaction.update({ embeds: [approveEmbed], components: [] });
+
+                    // إشعار المتقدم
+                    try {
+                        const applicantUser = await client.users.fetch(app.discord_id);
+                        const dmEmbed = new EmbedBuilder()
+                            .setTitle('✅ تم قبول طلب تصريحك التجاري!')
+                            .setColor(0x1B5E20)
+                            .setDescription(
+                                `مبروك! تمت الموافقة على تصريح شركة **${app.company_name}**.\n\n` +
+                                `💰 تم خصم **${PERMIT_FEE.toLocaleString()} ريال** كرسوم تصريح.\n\n` +
+                                `يمكنك الآن تأسيس شركتك عبر أمر \`/شركة\`.`
+                            )
+                            .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                            .setTimestamp();
+                        await applicantUser.send({ embeds: [dmEmbed] });
+                    } catch (_) {}
+                } else {
+                    await db.updatePermitApplicationStatus(permitId, 'rejected', interaction.user.id);
+
+                    const rejectEmbed = new EmbedBuilder()
+                        .setTitle('❌ تم رفض طلب التصريح')
+                        .setColor(0xB71C1C)
+                        .addFields(
+                            { name: '👤 المتقدم', value: `<@${app.discord_id}>`, inline: true },
+                            { name: '🏢 الشركة', value: app.company_name, inline: true },
+                            { name: '❌ رفضه', value: `<@${interaction.user.id}>`, inline: true },
+                        )
+                        .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                        .setTimestamp();
+                    await interaction.update({ embeds: [rejectEmbed], components: [] });
+
+                    // إشعار المتقدم
+                    try {
+                        const applicantUser = await client.users.fetch(app.discord_id);
+                        const dmEmbed = new EmbedBuilder()
+                            .setTitle('❌ تم رفض طلب تصريحك التجاري')
+                            .setColor(0xB71C1C)
+                            .setDescription(
+                                `للأسف، تم رفض طلب تصريح شركة **${app.company_name}**.\n` +
+                                `تواصل مع وزارة التجارة للمزيد من التفاصيل.`
+                            )
+                            .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                            .setTimestamp();
+                        await applicantUser.send({ embeds: [dmEmbed] });
+                    } catch (_) {}
+                }
+            } catch (e) {
+                console.error('[PERMIT APPROVE/REJECT ERROR]', e);
+                if (!interaction.replied && !interaction.deferred) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
         // ── أزرار وزارة التجارة ──────────────────────────────────────────────────
         if (['ministry_login_btn','ministry_logout_btn','ministry_companies_btn','ministry_approve_btn'].includes(interaction.customId)) {
             try {
@@ -3468,6 +3654,77 @@ client.on('interactionCreate', async interaction => {
             } catch (e) {
                 console.error('[TRACKING MODAL ERROR]', e);
                 if (!interaction.replied) interaction.editReply({ content: '❌ حدث خطأ.' });
+            }
+            return;
+        }
+
+        // ── طلب تصريح تجاري ────────────────────────────────────────────────
+        if (interaction.customId === 'permit_apply_modal') {
+            try {
+                await interaction.deferReply({ flags: 64 });
+
+                const companyName  = interaction.fields.getTextInputValue('permit_company_name').trim();
+                const businessType = interaction.fields.getTextInputValue('permit_business_type').trim();
+                const goals        = interaction.fields.getTextInputValue('permit_goals').trim();
+
+                const identity = await db.getActiveIdentity(interaction.user.id);
+                if (!identity)
+                    return interaction.editReply({ content: '❌ سجّل دخولك أولاً ثم حاول مجدداً.' });
+
+                // تحقق إذا عنده تصريح مقبول بالفعل
+                const hasPerm = await db.hasTradePermit(interaction.user.id);
+                if (hasPerm)
+                    return interaction.editReply({ content: '⚠️ لديك تصريح تجاري نشط بالفعل.' });
+
+                const permitChannelId = await db.getConfig('permit_approval_channel');
+                if (!permitChannelId)
+                    return interaction.editReply({ content: '❌ لم يتم تحديد قناة قبول التصاريح. تواصل مع الإدارة.' });
+
+                const app = await db.createPermitApplication({
+                    discordId:    interaction.user.id,
+                    username:     interaction.user.username,
+                    companyName,
+                    businessType,
+                    goals,
+                });
+
+                await interaction.editReply({
+                    content: `⏳ تم إرسال طلب تصريح شركة **${companyName}** برقم \`#${app.id}\` إلى وزارة التجارة.\nسيصلك رد عند قبول أو رفض الطلب.`,
+                });
+
+                try {
+                    const permitCh = await client.channels.fetch(permitChannelId);
+                    if (permitCh) {
+                        const appEmbed = new EmbedBuilder()
+                            .setTitle(`📋 طلب تصريح تجاري — #${app.id}`)
+                            .setColor(0xF57F17)
+                            .setThumbnail(interaction.user.displayAvatarURL())
+                            .addFields(
+                                { name: '👤 المتقدم', value: `<@${interaction.user.id}> — \`${interaction.user.username}\``, inline: false },
+                                { name: '🏷️ هويته', value: identity.character_name || '—', inline: true },
+                                { name: '💰 رصيد البنك', value: `\`${Number(identity.balance || 0).toLocaleString()} ريال\``, inline: true },
+                                { name: '🏢 اسم الشركة', value: `**${companyName}**`, inline: false },
+                                { name: '🏪 نوع الأعمال', value: `\`\`\`${businessType}\`\`\``, inline: false },
+                                { name: '🎯 الأهداف', value: `\`\`\`${goals}\`\`\``, inline: false },
+                            )
+                            .setFooter({ text: `طلب #${app.id} • بانتظار المراجعة` })
+                            .setTimestamp();
+
+                        const btnRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId(`approve_permit_${app.id}`).setLabel('✅ قبول').setStyle(ButtonStyle.Success),
+                            new ButtonBuilder().setCustomId(`reject_permit_${app.id}`).setLabel('❌ رفض').setStyle(ButtonStyle.Danger),
+                        );
+                        await permitCh.send({ embeds: [appEmbed], components: [btnRow] });
+                    }
+                } catch (chErr) {
+                    console.error('[PERMIT CHANNEL SEND ERROR]', chErr);
+                }
+            } catch (e) {
+                console.error('[PERMIT APPLY MODAL ERROR]', e);
+                if (!interaction.replied && !interaction.deferred)
+                    interaction.reply({ content: '❌ حدث خطأ أثناء إرسال الطلب.', flags: 64 });
+                else if (interaction.deferred)
+                    interaction.editReply({ content: '❌ حدث خطأ أثناء إرسال الطلب.' });
             }
             return;
         }

@@ -1558,6 +1558,7 @@ module.exports = {
     addTicketType, removeTicketType, getTicketTypes,
     createPendingCompany, getPendingCompany, getAllPendingCompanies, updatePendingCompanyStatus,
     hasTradePermit, grantTradePermit, revokeTradePermit, getAllTradePermits,
+    createPermitApplication, getPermitApplication, getPermitApplicationsByUser, updatePermitApplicationStatus,
     createCompany, getCompanyByOwner, getCompanyByMember, getUserCompany, getCompanyById,
     getCompanyMembers, addCompanyMember, removeCompanyMember, updateCompanyMemberRole,
     depositToCompany, withdrawFromCompany, payCompanySalaries, getAllCompanies, dissolveCompany,
@@ -1855,6 +1856,20 @@ async function getAllStaffActivity() {
             UNIQUE(company_id, discord_id)
         );
     `);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS permit_applications (
+            id              SERIAL PRIMARY KEY,
+            discord_id      TEXT NOT NULL,
+            username        TEXT,
+            company_name    TEXT NOT NULL,
+            business_type   TEXT NOT NULL,
+            goals           TEXT NOT NULL,
+            status          TEXT DEFAULT 'pending',
+            reviewed_by     TEXT,
+            reviewed_at     TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
 })().catch(console.error);
 
 async function createPendingCompany(data) {
@@ -1886,6 +1901,33 @@ async function grantTradePermit(discordId, grantedBy) {
         `INSERT INTO trade_permits (discord_id, granted_by) VALUES ($1, $2)
          ON CONFLICT (discord_id) DO UPDATE SET granted_by=$2, granted_at=NOW()`,
         [discordId, grantedBy]
+    );
+}
+
+/* ── permit_applications ── */
+async function createPermitApplication(data) {
+    const res = await query(
+        `INSERT INTO permit_applications (discord_id, username, company_name, business_type, goals)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [data.discordId, data.username, data.companyName, data.businessType, data.goals]
+    );
+    return res.rows[0];
+}
+async function getPermitApplication(id) {
+    const res = await query('SELECT * FROM permit_applications WHERE id=$1', [id]);
+    return res.rows[0] || null;
+}
+async function getPermitApplicationsByUser(discordId) {
+    const res = await query(
+        `SELECT * FROM permit_applications WHERE discord_id=$1 ORDER BY created_at DESC`,
+        [discordId]
+    );
+    return res.rows;
+}
+async function updatePermitApplicationStatus(id, status, reviewedBy) {
+    await query(
+        'UPDATE permit_applications SET status=$2, reviewed_by=$3, reviewed_at=NOW() WHERE id=$1',
+        [id, status, reviewedBy]
     );
 }
 async function revokeTradePermit(discordId) {
