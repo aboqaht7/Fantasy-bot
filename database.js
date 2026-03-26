@@ -25,6 +25,174 @@ async function query(text, params) {
     }
 }
 
+/* ─── إنشاء الجداول الأساسية عند بدء التشغيل ──────────────────────────── */
+async function initCoreDB() {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            discord_id   VARCHAR PRIMARY KEY,
+            username     VARCHAR,
+            active_slot  INTEGER DEFAULT 1,
+            is_logged_in BOOLEAN DEFAULT FALSE,
+            unlocked_slot3 BOOLEAN DEFAULT FALSE
+        );
+        CREATE TABLE IF NOT EXISTS bank_accounts (
+            discord_id VARCHAR PRIMARY KEY
+        );
+        CREATE TABLE IF NOT EXISTS identities (
+            id             SERIAL PRIMARY KEY,
+            discord_id     VARCHAR NOT NULL,
+            slot           INTEGER NOT NULL DEFAULT 1,
+            character_name VARCHAR,
+            family_name    VARCHAR,
+            birth_place    VARCHAR,
+            birth_date     VARCHAR,
+            gender         VARCHAR,
+            iban           VARCHAR UNIQUE,
+            balance        NUMERIC DEFAULT 0,
+            cash           NUMERIC DEFAULT 0,
+            frozen         BOOLEAN DEFAULT FALSE,
+            UNIQUE (discord_id, slot)
+        );
+        CREATE TABLE IF NOT EXISTS server_config (
+            key   VARCHAR PRIMARY KEY,
+            value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS character_log (
+            id             SERIAL PRIMARY KEY,
+            discord_id     VARCHAR,
+            username       VARCHAR,
+            action         VARCHAR,
+            character_name VARCHAR,
+            slot           INTEGER,
+            details        TEXT,
+            created_at     TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS pending_identities (
+            id          SERIAL PRIMARY KEY,
+            discord_id  VARCHAR,
+            username    VARCHAR,
+            slot        INTEGER,
+            char_name   VARCHAR,
+            family_name VARCHAR,
+            birth_place VARCHAR,
+            birth_date  VARCHAR,
+            gender      VARCHAR,
+            status      VARCHAR DEFAULT 'pending',
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS transactions (
+            id         SERIAL PRIMARY KEY,
+            from_iban  VARCHAR,
+            to_iban    VARCHAR,
+            amount     NUMERIC,
+            type       VARCHAR,
+            note       TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS inventory (
+            id         SERIAL PRIMARY KEY,
+            discord_id VARCHAR,
+            item_name  VARCHAR,
+            quantity   INTEGER DEFAULT 1,
+            added_at   TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS system_images (
+            system_key VARCHAR PRIMARY KEY,
+            image_url  TEXT,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS robberies (
+            id         SERIAL PRIMARY KEY,
+            name       VARCHAR,
+            tools      TEXT,
+            min_money  INTEGER DEFAULT 0,
+            max_money  INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS showroom (
+            id        SERIAL PRIMARY KEY,
+            car_name  VARCHAR,
+            car_type  VARCHAR,
+            price     NUMERIC DEFAULT 0,
+            color     VARCHAR,
+            available BOOLEAN DEFAULT TRUE,
+            added_by  VARCHAR,
+            added_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS vehicles (
+            id         SERIAL PRIMARY KEY,
+            discord_id VARCHAR,
+            car_name   VARCHAR,
+            plate      VARCHAR UNIQUE,
+            added_at   TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS tickets (
+            id          SERIAL PRIMARY KEY,
+            discord_id  VARCHAR,
+            ticket_type VARCHAR,
+            subject     TEXT,
+            status      VARCHAR DEFAULT 'open',
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS phone_messages (
+            id          SERIAL PRIMARY KEY,
+            sender_id   VARCHAR,
+            receiver_id VARCHAR,
+            content     TEXT,
+            read        BOOLEAN DEFAULT FALSE,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS phone_contacts (
+            id         SERIAL PRIMARY KEY,
+            owner_id   VARCHAR,
+            contact_id VARCHAR,
+            nickname   VARCHAR
+        );
+        CREATE TABLE IF NOT EXISTS x_accounts (
+            discord_id  VARCHAR PRIMARY KEY,
+            x_username  VARCHAR UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS x_posts (
+            id              SERIAL PRIMARY KEY,
+            discord_id      VARCHAR,
+            username        VARCHAR,
+            x_username      VARCHAR,
+            content         TEXT,
+            likes           INTEGER DEFAULT 0,
+            retweets        INTEGER DEFAULT 0,
+            replies         INTEGER DEFAULT 0,
+            type            TEXT DEFAULT 'tweet',
+            reply_to_id     INTEGER,
+            retweet_of_id   INTEGER,
+            orig_username   TEXT,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS snap_accounts (
+            discord_id    VARCHAR PRIMARY KEY,
+            snap_username VARCHAR UNIQUE,
+            score         INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS snap_friends (
+            id          SERIAL PRIMARY KEY,
+            user_a      VARCHAR,
+            user_b      VARCHAR,
+            status      VARCHAR DEFAULT 'pending',
+            streak      INTEGER DEFAULT 0,
+            last_snap_a TIMESTAMPTZ,
+            last_snap_b TIMESTAMPTZ
+        );
+        CREATE TABLE IF NOT EXISTS snap_messages (
+            id          SERIAL PRIMARY KEY,
+            sender_id   VARCHAR,
+            receiver_id VARCHAR,
+            content     TEXT,
+            seen        BOOLEAN DEFAULT FALSE,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+}
+initCoreDB().catch(console.error);
+
 async function ensureUser(discordId, username) {
     await query(
         `INSERT INTO users (discord_id, username, active_slot) VALUES ($1, $2, 1)
