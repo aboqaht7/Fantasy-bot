@@ -63,9 +63,9 @@ const trackingCooldowns = new Map();
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 
-    // ── ضبط رسائل الرحلات الافتراضية ──────────────────────────────────────
+    // ── ضبط رسائل الرحلات الافتراضية (تُكتب مرة واحدة فقط عند أول تشغيل) ──
     try {
-        await db.setConfig('trip_start_message',
+        await db.setConfigDefault('trip_start_message',
 `- إعـلان رحـلـة لـدولـة —FANTASY TOWN .
 
 
@@ -84,7 +84,7 @@ client.once('clientReady', async () => {
 - عـدم إزعـاج كـابـتـن الـطـائـرة والـمُـسـاعـد .
 || @everyone ||`);
 
-        await db.setConfig('trip_renewal_message',
+        await db.setConfigDefault('trip_renewal_message',
 `بدء الرحلة  — يوجد تجديد رحلة 
 الرجاء من الجميع وضع خيار { LAST LOCATION } 
 و الخروج من الرحلة و الدخول على الرحلة الجديدة 
@@ -94,7 +94,7 @@ client.once('clientReady', async () => {
 نتمنى لكم التوفيق دائماً ❣️
 || @everyone ||`);
 
-        await db.setConfig('trip_hurricane_message',
+        await db.setConfigDefault('trip_hurricane_message',
 `التجديد اشعار اعصار 
 
 ⚠️— يوجد اعصار في المدينة يجب على جميع اللاعبين 
@@ -105,7 +105,7 @@ client.once('clientReady', async () => {
 نتمنى لكم التوفيق دائماً ❣️
 || @everyone ||`);
 
-        console.log('✅ تم ضبط رسائل الرحلات');
+        console.log('✅ تم ضبط رسائل الرحلات الافتراضية');
     } catch (e) {
         console.error('❌ خطأ في ضبط رسائل الرحلات:', e.message);
     }
