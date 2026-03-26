@@ -19,8 +19,7 @@ module.exports = {
                 '**🟢 تسجيل دخول** — سجّل حضورك كعضو CIA\n' +
                 '**🔴 تسجيل خروج** — سجّل مغادرتك\n' +
                 '**👥 كشف مباشرين** — عرض أعضاء CIA المباشرين (Chef فقط)\n' +
-                '**🪪 هوية مزيفة** — إصدار هوية مزيفة لشخص (Chef فقط)\n' +
-                '**📂 ملفات المواطنين** — عرض الملفات الكاملة لجميع المواطنين (Chef فقط)\n\n' +
+                '**🪪 هوية مزيفة** — إصدار هوية مزيفة لشخص (Chef فقط)\n\n' +
                 '> الأزرار متاحة لأعضاء CIA فقط'
             )
             .setFooter({ text: 'CIA • بوت FANTASY' })
@@ -45,11 +44,7 @@ module.exports = {
             new ButtonBuilder()
                 .setCustomId('cia_fake_id_btn')
                 .setLabel('🪪 إنشاء هوية مزيفة')
-                .setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder()
-                .setCustomId('cia_citizen_files_btn')
-                .setLabel('📂 ملفات المواطنين')
-                .setStyle(ButtonStyle.Primary)
+                .setStyle(ButtonStyle.Secondary)
         );
 
         await interaction.reply({ embeds: [embed], components: [row1, row2] });
