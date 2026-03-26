@@ -33,7 +33,7 @@ const bootstrapReady = (async () => {
         )
     `);
 })().catch((error) => {
-    console.error('Bootstrap schema error:', error);
+    console.error('Failed to create required database tables (server_config, x_posts):', error);
     throw error;
 });
 
