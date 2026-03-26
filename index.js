@@ -5057,7 +5057,7 @@ client.on('interactionCreate', async interaction => {
 
     if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
-    if (!command) return;
+    if (!command || !command.slashExecute) return;
     try {
         await command.slashExecute(interaction, db);
     } catch (error) {
