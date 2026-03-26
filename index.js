@@ -28,6 +28,7 @@ const {
     AuditLogEvent, Partials
 } = require('discord.js');
 const db = require('./database');
+const { deployCommands } = require('./deploy-commands');
 require('dotenv').config();
 
 const client = new Client({
@@ -56,6 +57,12 @@ const trackingSessions = new Map();
 
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
+
+    try {
+        await deployCommands();
+    } catch (e) {
+        console.error('❌ خطأ في تسجيل أوامر Slash:', e.message || e);
+    }
 
     // ── ضبط رسائل الرحلات الافتراضية ──────────────────────────────────────
     try {
@@ -4676,7 +4683,7 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    if (!interaction.isCommand()) return;
+    if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
     try {
