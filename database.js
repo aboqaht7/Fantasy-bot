@@ -5,6 +5,16 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
+// تسجيل أخطاء الاتصال بقاعدة البيانات
+pool.on('error', (err) => {
+    console.error('❌ خطأ في الاتصال بقاعدة البيانات:', err.message);
+});
+
+// التحقق من الاتصال عند البدء
+pool.connect()
+    .then(client => { console.log('✅ تم الاتصال بقاعدة البيانات'); client.release(); })
+    .catch(err => console.error('❌ فشل الاتصال بقاعدة البيانات:', err.message));
+
 async function query(text, params) {
     const client = await pool.connect();
     try {

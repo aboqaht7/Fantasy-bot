@@ -27,8 +27,8 @@ const {
     ButtonBuilder, ButtonStyle, PermissionFlagsBits,
     AuditLogEvent, Partials
 } = require('discord.js');
-const db = require('./database');
 require('dotenv').config();
+const db = require('./database');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
