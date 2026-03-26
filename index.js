@@ -25,7 +25,7 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
     ActionRowBuilder, StringSelectMenuBuilder,
     ButtonBuilder, ButtonStyle, PermissionFlagsBits,
-    AuditLogEvent, Partials
+    AuditLogEvent, Partials, REST, Routes
 } = require('discord.js');
 require('dotenv').config();
 const db = require('./database');
@@ -104,6 +104,22 @@ client.once('clientReady', async () => {
         console.log('✅ تم ضبط رسائل الرحلات');
     } catch (e) {
         console.error('❌ خطأ في ضبط رسائل الرحلات:', e.message);
+    }
+
+    // ── تسجيل السلاش كوماند تلقائياً عند بدء التشغيل ──────────────────────
+    try {
+        const slashCommands = [];
+        for (const command of client.commands.values()) {
+            if (command.data) slashCommands.push(command.data.toJSON());
+        }
+        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+        await rest.put(
+            Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+            { body: slashCommands },
+        );
+        console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
+    } catch (e) {
+        console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
     }
 
     setInterval(async () => {
