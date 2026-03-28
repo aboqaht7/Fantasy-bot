@@ -6,10 +6,15 @@ const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
 const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
 const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
 const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
+const ENV_TEMPLATE_START = '${{';
+const ENV_TEMPLATE_END = '}}';
+const INVALID_DATABASE_URL_MESSAGE = 'Database is unavailable. Set a valid DATABASE_URL before starting the bot.';
+const DATABASE_DISABLED_WARNING = '⚠️ PostgreSQL disabled: DATABASE_URL is missing or invalid.';
+const AUTH_FAILURE_MESSAGE = 'Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.';
 
 function resolveDatabaseUrl(rawValue) {
     const value = typeof rawValue === 'string' ? rawValue.trim() : '';
-    if (!value || value.includes('${{') || value.includes('}}')) {
+    if (!value || value.includes(ENV_TEMPLATE_START) || value.includes(ENV_TEMPLATE_END)) {
         return null;
     }
 
@@ -67,8 +72,8 @@ function isConnectionDatabaseError(error) {
 
 const databaseUrl = resolveDatabaseUrl(process.env.DATABASE_URL);
 if (!databaseUrl) {
-    disableDatabase('Database is unavailable. Set a valid DATABASE_URL before starting the bot.');
-    logDatabaseWarning('⚠️ PostgreSQL disabled: DATABASE_URL is missing or invalid.');
+    disableDatabase(INVALID_DATABASE_URL_MESSAGE);
+    logDatabaseWarning(DATABASE_DISABLED_WARNING);
 }
 
 const rawPool = databaseUrl ? new Pool({
@@ -79,7 +84,7 @@ const rawPool = databaseUrl ? new Pool({
 if (rawPool) {
     rawPool.on('error', (error) => {
         if (isFatalDatabaseError(error)) {
-            disableDatabase('Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.');
+            disableDatabase(AUTH_FAILURE_MESSAGE);
         }
 
         logDatabaseWarning('⚠️ PostgreSQL pool error.', error);
@@ -95,7 +100,7 @@ async function withDatabase(action) {
         return await action();
     } catch (error) {
         if (isFatalDatabaseError(error)) {
-            disableDatabase('Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.');
+            disableDatabase(AUTH_FAILURE_MESSAGE);
         }
 
         if (isConnectionDatabaseError(error)) {
