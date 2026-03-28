@@ -1,12 +1,21 @@
 const { REST, Routes } = require('discord.js');
 require('dotenv').config();
 const fs = require('fs');
+const path = require('path');
 
 const commands = [];
-const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
+const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    if (command.data) commands.push(command.data.toJSON());
+    const commandPath = path.join(commandsPath, file);
+    try {
+        const command = require(commandPath);
+        if (command?.data && typeof command.data.toJSON === 'function') {
+            commands.push(command.data.toJSON());
+        }
+    } catch (error) {
+        console.error(`[DEPLOY LOAD ERROR] ${file}:`, error?.message || error);
+    }
 }
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
