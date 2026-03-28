@@ -5,14 +5,16 @@ const { Pool } = require('pg');
 const DATABASE_UNAVAILABLE_CODE = 'DATABASE_UNAVAILABLE';
 const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
 const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
-const DEFAULT_DATABASE_UNAVAILABLE_MESSAGE = 'Database is unavailable.';
 const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
 const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
 const ENV_TEMPLATE_START = '${{';
 const ENV_TEMPLATE_END = '}}';
-const INVALID_DATABASE_URL_MESSAGE = 'Database is unavailable. Set a valid DATABASE_URL before starting the bot.';
-const DATABASE_DISABLED_WARNING = '⚠️ PostgreSQL disabled: DATABASE_URL is missing or invalid.';
-const AUTH_FAILURE_MESSAGE = 'Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.';
+const DATABASE_MESSAGES = Object.freeze({
+    unavailable: 'Database is unavailable.',
+    invalidUrl: 'Database is unavailable. Set a valid DATABASE_URL before starting the bot.',
+    disabledWarning: '⚠️ PostgreSQL disabled: DATABASE_URL is missing or invalid.',
+    authFailure: 'Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.'
+});
 
 function resolveDatabaseUrl(rawValue) {
     const value = typeof rawValue === 'string' ? rawValue.trim() : '';
@@ -52,7 +54,7 @@ function logDatabaseWarning(message, error) {
 }
 
 function createDatabaseUnavailableError(error) {
-    const reason = databaseState.reason || DEFAULT_DATABASE_UNAVAILABLE_MESSAGE;
+    const reason = databaseState.reason || DATABASE_MESSAGES.unavailable;
     const wrapped = new Error(reason);
     wrapped.code = DATABASE_UNAVAILABLE_CODE;
     if (error) wrapped.cause = error;
@@ -69,13 +71,13 @@ function isFatalDatabaseError(error) {
 }
 
 function isConnectionDatabaseError(error) {
-    return Boolean(error && (CONNECTION_ERROR_CODES.has(error.code) || isFatalDatabaseError(error)));
+    return Boolean(error && CONNECTION_ERROR_CODES.has(error.code));
 }
 
 const databaseUrl = resolveDatabaseUrl(process.env.DATABASE_URL);
 if (!databaseUrl) {
-    disableDatabase(INVALID_DATABASE_URL_MESSAGE);
-    logDatabaseWarning(DATABASE_DISABLED_WARNING);
+    disableDatabase(DATABASE_MESSAGES.invalidUrl);
+    logDatabaseWarning(DATABASE_MESSAGES.disabledWarning);
 }
 
 const rawPool = databaseUrl ? new Pool({
@@ -86,7 +88,7 @@ const rawPool = databaseUrl ? new Pool({
 if (rawPool) {
     rawPool.on('error', (error) => {
         if (isFatalDatabaseError(error)) {
-            disableDatabase(AUTH_FAILURE_MESSAGE);
+            disableDatabase(DATABASE_MESSAGES.authFailure);
         }
 
         logDatabaseWarning('⚠️ PostgreSQL pool error.', error);
@@ -101,11 +103,12 @@ async function withDatabase(action) {
     try {
         return await action();
     } catch (error) {
-        if (isFatalDatabaseError(error)) {
-            disableDatabase(AUTH_FAILURE_MESSAGE);
+        const fatalError = isFatalDatabaseError(error);
+        if (fatalError) {
+            disableDatabase(DATABASE_MESSAGES.authFailure);
         }
 
-        if (isConnectionDatabaseError(error)) {
+        if (fatalError || isConnectionDatabaseError(error)) {
             logDatabaseWarning('⚠️ PostgreSQL connection failed.', error);
             throw createDatabaseUnavailableError(error);
         }
@@ -1787,6 +1790,8 @@ async function getExpiredViolations() {
         const res = await pool.query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
         return res.rows;
     } catch (error) {
+        // هذا الاستعلام يُشغَّل دورياً في الخلفية، لذا نعيد قائمة فارغة عند تعطل قاعدة البيانات
+        // حتى لا يستمر البوت بطباعة نفس الخطأ كل دقيقة.
         if (error?.code === DATABASE_UNAVAILABLE_CODE) {
             return EMPTY_QUERY_RESULT.rows;
         }
