@@ -4,6 +4,8 @@ const { Pool } = require('pg');
 const DATABASE_UNAVAILABLE_CODE = 'DATABASE_UNAVAILABLE';
 const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
 const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
+const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
+const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
 
 function resolveDatabaseUrl(rawValue) {
     const value = typeof rawValue === 'string' ? rawValue.trim() : '';
@@ -56,7 +58,11 @@ function handleDatabaseInitError(error) {
 }
 
 function isFatalDatabaseError(error) {
-    return Boolean(error && ['28P01', '3D000'].includes(error.code));
+    return Boolean(error && FATAL_DATABASE_ERROR_CODES.has(error.code));
+}
+
+function isConnectionDatabaseError(error) {
+    return Boolean(error && (CONNECTION_ERROR_CODES.has(error.code) || isFatalDatabaseError(error)));
 }
 
 const databaseUrl = resolveDatabaseUrl(process.env.DATABASE_URL);
@@ -92,7 +98,7 @@ async function withDatabase(action) {
             disableDatabase('Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.');
         }
 
-        if (error?.code && (error.code.startsWith('E') || isFatalDatabaseError(error))) {
+        if (isConnectionDatabaseError(error)) {
             logDatabaseWarning('⚠️ PostgreSQL connection failed.', error);
             throw createDatabaseUnavailableError(error);
         }
