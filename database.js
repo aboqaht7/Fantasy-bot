@@ -1,9 +1,11 @@
-require('dotenv').config();
+const dotenv = require('dotenv');
+dotenv.config();
 const { Pool } = require('pg');
 
 const DATABASE_UNAVAILABLE_CODE = 'DATABASE_UNAVAILABLE';
 const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
 const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
+const DEFAULT_DATABASE_UNAVAILABLE_MESSAGE = 'Database is unavailable.';
 const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
 const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
 const ENV_TEMPLATE_START = '${{';
@@ -50,7 +52,7 @@ function logDatabaseWarning(message, error) {
 }
 
 function createDatabaseUnavailableError(error) {
-    const reason = databaseState.reason || 'Database is unavailable. Check DATABASE_URL and PostgreSQL credentials.';
+    const reason = databaseState.reason || DEFAULT_DATABASE_UNAVAILABLE_MESSAGE;
     const wrapped = new Error(reason);
     wrapped.code = DATABASE_UNAVAILABLE_CODE;
     if (error) wrapped.cause = error;
