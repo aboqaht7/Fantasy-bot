@@ -7,8 +7,7 @@ const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
 const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
 const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
 const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
-const ENV_TEMPLATE_START = '${{';
-const ENV_TEMPLATE_END = '}}';
+const ENV_TEMPLATE_PATTERN = /^\$\{\{[^}]+\}\}$/;
 const DATABASE_MESSAGES = Object.freeze({
     unavailable: 'Database is unavailable.',
     invalidUrl: 'Database is unavailable. Set a valid DATABASE_URL before starting the bot.',
@@ -18,7 +17,7 @@ const DATABASE_MESSAGES = Object.freeze({
 
 function resolveDatabaseUrl(rawValue) {
     const value = typeof rawValue === 'string' ? rawValue.trim() : '';
-    if (!value || value.includes(ENV_TEMPLATE_START) || value.includes(ENV_TEMPLATE_END)) {
+    if (!value || ENV_TEMPLATE_PATTERN.test(value)) {
         return null;
     }
 
@@ -1790,8 +1789,6 @@ async function getExpiredViolations() {
         const res = await pool.query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
         return res.rows;
     } catch (error) {
-        // هذا الاستعلام يُشغَّل دورياً في الخلفية، لذا نعيد قائمة فارغة عند تعطل قاعدة البيانات
-        // حتى لا يستمر البوت بطباعة نفس الخطأ كل دقيقة.
         if (error?.code === DATABASE_UNAVAILABLE_CODE) {
             return EMPTY_QUERY_RESULT.rows;
         }
