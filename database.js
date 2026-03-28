@@ -280,6 +280,15 @@ async function isSlot3Unlocked(discordId) {
     return res.rows[0]?.unlocked_slot3 === true;
 }
 
+(async () => {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS server_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    `);
+})().catch(console.error);
+
 async function getConfig(key) {
     const res = await query('SELECT value FROM server_config WHERE key=$1', [key]);
     return res.rows[0]?.value || null;
@@ -394,6 +403,33 @@ async function getAllActiveIdentities() {
     `);
     return res.rows;
 }
+
+(async () => {
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS x_accounts (
+            discord_id  TEXT PRIMARY KEY,
+            x_username  TEXT NOT NULL UNIQUE,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS x_posts (
+            id            SERIAL PRIMARY KEY,
+            discord_id    TEXT NOT NULL,
+            username      TEXT,
+            x_username    TEXT,
+            content       TEXT NOT NULL,
+            likes         INTEGER DEFAULT 0,
+            retweets      INTEGER DEFAULT 0,
+            replies       INTEGER DEFAULT 0,
+            type          TEXT DEFAULT 'tweet',
+            reply_to_id   INTEGER,
+            retweet_of_id INTEGER,
+            orig_username TEXT,
+            created_at    TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+})().catch(console.error);
 
 async function createXAccount(discordId, xUsername) {
     const existing = await query('SELECT * FROM x_accounts WHERE discord_id = $1', [discordId]);
