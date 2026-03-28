@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 
 /* ── منع تشغيل أكثر من نسخة واحدة ─────────────────────────────────────── */
 const PID_FILE = '/tmp/fantasy_bot.pid';
@@ -36,10 +37,20 @@ const client = new Client({
 });
 
 client.commands = new Collection();
-const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
+const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.name, command);
+    const commandPath = path.join(commandsPath, file);
+    try {
+        const command = require(commandPath);
+        if (!command?.name) {
+            console.warn(`[COMMAND LOAD WARN] تجاهل الملف ${file} لعدم وجود name`);
+            continue;
+        }
+        client.commands.set(command.name, command);
+    } catch (error) {
+        console.error(`[COMMAND LOAD ERROR] ${file}:`, error?.message || error);
+    }
 }
 
 /* ── منع معالجة نفس التفاعل مرتين (مشكلة Gateway) ────────────────────── */
@@ -4680,7 +4691,16 @@ client.on('interactionCreate', async interaction => {
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
     try {
-        await command.slashExecute(interaction, db);
+        const handler = typeof command.slashExecute === 'function'
+            ? command.slashExecute
+            : command.execute;
+        if (typeof handler !== 'function') {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ content: 'هذا الأمر غير مهيأ حالياً.', flags: 64 });
+            }
+            return;
+        }
+        await handler.call(command, interaction, db);
     } catch (error) {
         console.error(`[SLASH ERROR] /${interaction.commandName}:`, error?.message || error);
         if (!interaction.replied && !interaction.deferred) {

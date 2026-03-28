@@ -11,7 +11,7 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('ملفات-الأمن')
         .setDescription('لوحة نظام ملفات الأمن والتراكينق'),
-    async execute(interaction, db) {
+    async slashExecute(interaction, db) {
         const embed = new EmbedBuilder()
             .setTitle('🛡️ نظام ملفات الأمن')
             .setColor(0x1A237E)
