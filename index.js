@@ -27,8 +27,8 @@ const {
     ButtonBuilder, ButtonStyle, PermissionFlagsBits,
     AuditLogEvent, Partials
 } = require('discord.js');
-const db = require('./database');
 require('dotenv').config();
+const db = require('./database');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
@@ -106,6 +106,7 @@ client.once('clientReady', async () => {
 
     setInterval(async () => {
         try {
+            if (!db.isDatabaseAvailable()) return;
             await db.updateAllJobPrices();
             console.log('✅ تم تحديث أسعار الوظائف تلقائياً');
         } catch (e) {
@@ -4795,6 +4796,7 @@ process.on('SIGINT',  () => { console.log('SIGINT received — exiting.');  proc
 // ── فحص دوري كل دقيقة لرفع المخالفات المنتهية ──────────────────────────
 setInterval(async () => {
     try {
+        if (!db.isDatabaseAvailable()) return;
         const expired = await db.getExpiredViolations();
         if (!expired.length) return;
 

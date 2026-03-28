@@ -1,9 +1,133 @@
+const dotenv = require('dotenv');
+dotenv.config();
 const { Pool } = require('pg');
 
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+const DATABASE_UNAVAILABLE_CODE = 'DATABASE_UNAVAILABLE';
+const DATABASE_LOG_INTERVAL_MS = 60 * 1000;
+const EMPTY_QUERY_RESULT = Object.freeze({ rows: [], rowCount: 0 });
+const FATAL_DATABASE_ERROR_CODES = new Set(['28P01', '3D000']);
+const CONNECTION_ERROR_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'ETIMEDOUT']);
+const ENV_TEMPLATE_PATTERN = /^\$\{\{[^}]+\}\}$/;
+const DATABASE_MESSAGES = Object.freeze({
+    unavailable: 'Database is unavailable.',
+    invalidUrl: 'Database is unavailable. Set a valid DATABASE_URL before starting the bot.',
+    disabledWarning: '⚠️ PostgreSQL disabled: DATABASE_URL is missing or invalid.',
+    authFailure: 'Database authentication failed. Update DATABASE_URL with the correct PostgreSQL credentials, then restart the bot.'
 });
+
+function resolveDatabaseUrl(rawValue) {
+    const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+    if (!value || ENV_TEMPLATE_PATTERN.test(value)) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(value);
+        return ['postgres:', 'postgresql:'].includes(parsed.protocol) ? value : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+const databaseState = {
+    disabled: false,
+    reason: null,
+    lastLoggedAt: 0
+};
+
+function disableDatabase(reason) {
+    if (!databaseState.disabled) {
+        databaseState.disabled = true;
+        databaseState.reason = reason;
+    }
+}
+
+function logDatabaseWarning(message, error) {
+    const now = Date.now();
+    if (now - databaseState.lastLoggedAt < DATABASE_LOG_INTERVAL_MS) return;
+    databaseState.lastLoggedAt = now;
+    console.error(message);
+    if (error) {
+        console.error(error.message);
+    }
+}
+
+function createDatabaseUnavailableError(error) {
+    const reason = databaseState.reason || DATABASE_MESSAGES.unavailable;
+    const wrapped = new Error(reason);
+    wrapped.code = DATABASE_UNAVAILABLE_CODE;
+    if (error) wrapped.cause = error;
+    return wrapped;
+}
+
+function handleDatabaseInitError(error) {
+    if (error?.code === DATABASE_UNAVAILABLE_CODE) return;
+    console.error(error);
+}
+
+function isFatalDatabaseError(error) {
+    return Boolean(error && FATAL_DATABASE_ERROR_CODES.has(error.code));
+}
+
+function isConnectionDatabaseError(error) {
+    return Boolean(error && CONNECTION_ERROR_CODES.has(error.code));
+}
+
+const databaseUrl = resolveDatabaseUrl(process.env.DATABASE_URL);
+if (!databaseUrl) {
+    disableDatabase(DATABASE_MESSAGES.invalidUrl);
+    logDatabaseWarning(DATABASE_MESSAGES.disabledWarning);
+}
+
+const rawPool = databaseUrl ? new Pool({
+    connectionString: databaseUrl,
+    ssl: databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+}) : null;
+
+if (rawPool) {
+    rawPool.on('error', (error) => {
+        if (isFatalDatabaseError(error)) {
+            disableDatabase(DATABASE_MESSAGES.authFailure);
+        }
+
+        logDatabaseWarning('⚠️ PostgreSQL pool error.', error);
+    });
+}
+
+async function withDatabase(action) {
+    if (!rawPool || databaseState.disabled) {
+        throw createDatabaseUnavailableError();
+    }
+
+    try {
+        return await action();
+    } catch (error) {
+        const fatalError = isFatalDatabaseError(error);
+        if (fatalError) {
+            disableDatabase(DATABASE_MESSAGES.authFailure);
+        }
+
+        if (fatalError || isConnectionDatabaseError(error)) {
+            logDatabaseWarning('⚠️ PostgreSQL connection failed.', error);
+            throw createDatabaseUnavailableError(error);
+        }
+
+        throw error;
+    }
+}
+
+const pool = {
+    query(text, params) {
+        return withDatabase(() => rawPool.query(text, params));
+    },
+    connect() {
+        return withDatabase(() => rawPool.connect());
+    }
+};
+
+function isDatabaseAvailable() {
+    return !databaseState.disabled;
+}
 
 async function query(text, params) {
     const client = await pool.connect();
@@ -440,7 +564,7 @@ async function getXTimeline(limit = 10) {
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function likePost(postId) {
     const res = await query(
@@ -601,7 +725,7 @@ async function initPropertiesTable() {
         )
     `);
 }
-initPropertiesTable().catch(console.error);
+initPropertiesTable().catch(handleDatabaseInitError);
 
 async function initAdminRanksTable() {
     await query(`
@@ -623,7 +747,7 @@ async function initAdminRanksTable() {
         )
     `);
 }
-initAdminRanksTable().catch(console.error);
+initAdminRanksTable().catch(handleDatabaseInitError);
 
 async function getRankTypes() {
     const res = await query('SELECT * FROM rank_types ORDER BY position ASC, id ASC');
@@ -688,7 +812,7 @@ async function initEquipmentTable() {
         )
     `);
 }
-initEquipmentTable().catch(console.error);
+initEquipmentTable().catch(handleDatabaseInitError);
 
 async function addEquipmentItem(name, price, description) {
     const res = await query(
@@ -740,7 +864,7 @@ async function initMarketTable() {
         )
     `);
 }
-initMarketTable().catch(console.error);
+initMarketTable().catch(handleDatabaseInitError);
 
 async function addMarketItem(name, price, description) {
     const res = await query(
@@ -791,7 +915,7 @@ async function initBlackMarketTable() {
         )
     `);
 }
-initBlackMarketTable().catch(console.error);
+initBlackMarketTable().catch(handleDatabaseInitError);
 
 async function addBlackMarketItem(name, price) {
     const res = await query(
@@ -1153,7 +1277,7 @@ async function initJobTables() {
         );
     }
 }
-initJobTables().catch(console.error);
+initJobTables().catch(handleDatabaseInitError);
 
 // ─── CASES SYSTEM ────────────────────────────────────────────────────────────
 
@@ -1189,7 +1313,7 @@ async function initCasesTable() {
         )
     `);
 }
-initCasesTable().catch(console.error);
+initCasesTable().catch(handleDatabaseInitError);
 
 async function createCase(plaintiffId, plaintiffName, defendant, title, description, evidence, lawyerFee = '') {
     const count  = await query('SELECT COUNT(*) FROM cases');
@@ -1321,7 +1445,7 @@ async function initLawyerRequestsTable() {
         )
     `);
 }
-initLawyerRequestsTable().catch(console.error);
+initLawyerRequestsTable().catch(handleDatabaseInitError);
 
 async function createLawyerRequest(caseId, caseNumber, caseTitle, plaintiffId, plaintiffName, lawyerId) {
     await query(`DELETE FROM lawyer_requests WHERE case_id=$1`, [caseId]);
@@ -1360,7 +1484,7 @@ async function initJudgesTable() {
         )
     `);
 }
-initJudgesTable().catch(console.error);
+initJudgesTable().catch(handleDatabaseInitError);
 
 async function getJudges() {
     const res = await query('SELECT * FROM judges ORDER BY judge_name ASC');
@@ -1392,7 +1516,7 @@ async function initLawyersTable() {
         )
     `);
 }
-initLawyersTable().catch(console.error);
+initLawyersTable().catch(handleDatabaseInitError);
 
 async function getLawyers() {
     const res = await query('SELECT * FROM lawyers ORDER BY lawyer_name ASC');
@@ -1508,7 +1632,7 @@ async function sellJobItems(discordId) {
 }
 
 module.exports = {
-    query, ensureUser, generateIban,
+    query, ensureUser, generateIban, isDatabaseAvailable,
     unlockSlot3, isSlot3Unlocked,
     updateIban,
     getConfig, setConfig, logoutAllUsers, addCharacterLog, getCharacterLogs,
@@ -1593,7 +1717,7 @@ async function initCuffedTable() {
         );
     `);
 }
-initCuffedTable().catch(console.error);
+initCuffedTable().catch(handleDatabaseInitError);
 
 /* ─── جدول آخر تجميع (لمنع التكرار) ─── */
 async function initGatheringTable() {
@@ -1605,7 +1729,7 @@ async function initGatheringTable() {
         );
     `);
 }
-initGatheringTable().catch(console.error);
+initGatheringTable().catch(handleDatabaseInitError);
 
 async function getLastGathered(userId) {
     const res = await pool.query('SELECT resource FROM gathering_last WHERE user_id=$1', [userId]);
@@ -1644,7 +1768,7 @@ async function initViolationsTable() {
     // إضافة العمود إن لم يكن موجوداً في جداول قديمة
     await pool.query(`ALTER TABLE violations ADD COLUMN IF NOT EXISTS saved_roles TEXT NOT NULL DEFAULT '[]';`);
 }
-initViolationsTable().catch(console.error);
+initViolationsTable().catch(handleDatabaseInitError);
 
 async function addViolation(userId, adminId, reason, expiresAt, savedRoles = []) {
     // احذف المخالفة القديمة إن وُجدت أولاً
@@ -1661,8 +1785,16 @@ async function removeViolation(userId) {
 }
 
 async function getExpiredViolations() {
-    const res = await pool.query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
-    return res.rows;
+    try {
+        const res = await pool.query(`SELECT * FROM violations WHERE expires_at <= NOW()`);
+        return res.rows;
+    } catch (error) {
+        if (error?.code === DATABASE_UNAVAILABLE_CODE) {
+            return EMPTY_QUERY_RESULT.rows;
+        }
+
+        throw error;
+    }
 }
 
 async function getViolationByUserId(userId) {
@@ -1682,7 +1814,7 @@ async function initActivationTable() {
         );
     `);
 }
-initActivationTable().catch(console.error);
+initActivationTable().catch(handleDatabaseInitError);
 
 async function createActivationRequest(userId, username, sonyId) {
     await pool.query(
@@ -1723,7 +1855,7 @@ async function deleteActivationRequest(id) {
         );
     `);
     await pool.query(`ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS role_id TEXT`);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function addTicketType(name, emoji, roleId = null) {
     const res = await pool.query(
@@ -1772,7 +1904,7 @@ async function removeOpenTicket(channelId) {
             manual_points INT DEFAULT 0
         )
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function addStaffActivity(discordId, field) {
     const allowed = ['trips_count', 'gmc_count', 'tickets_count'];
@@ -1855,7 +1987,7 @@ async function getAllStaffActivity() {
             UNIQUE(company_id, discord_id)
         );
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function createPendingCompany(data) {
     const res = await query(
@@ -2009,7 +2141,7 @@ async function dissolveCompany(companyId) {
             style       TEXT NOT NULL DEFAULT 'Primary'
         );
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 (async () => {
     await pool.query(`
@@ -2019,7 +2151,7 @@ async function dissolveCompany(companyId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function setMinistryDuty(discordId, status) {
     await pool.query(
@@ -2046,7 +2178,7 @@ async function getMinistryDuty(discordId) {
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function createFakeIdentity(targetId, issuerId, fakeName, fakeIban, expiresAt) {
     await pool.query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
@@ -2074,7 +2206,7 @@ async function deleteFakeIdentity(targetId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+})().catch(handleDatabaseInitError);
 
 async function setCiaDuty(discordId, status) {
     await pool.query(
