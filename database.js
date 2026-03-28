@@ -5,6 +5,16 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
 });
 
+// تسجيل أخطاء الاتصال بقاعدة البيانات
+pool.on('error', (err) => {
+    console.error('❌ خطأ في الاتصال بقاعدة البيانات:', err.message);
+});
+
+// التحقق من الاتصال عند البدء
+pool.connect()
+    .then(client => { console.log('✅ تم الاتصال بقاعدة البيانات'); client.release(); })
+    .catch(err => console.error('❌ فشل الاتصال بقاعدة البيانات:', err.message));
+
 async function query(text, params) {
     const client = await pool.connect();
     try {
@@ -14,6 +24,173 @@ async function query(text, params) {
         client.release();
     }
 }
+
+/* ─── إنشاء الجداول الأساسية عند بدء التشغيل ──────────────────────────── */
+async function initCoreDB() {
+    // كل جدول في استعلام منفصل حتى لا يوقف فشل أحدها إنشاء الباقين
+    await query(`CREATE TABLE IF NOT EXISTS users (
+        discord_id     VARCHAR PRIMARY KEY,
+        username       VARCHAR,
+        active_slot    INTEGER DEFAULT 1,
+        is_logged_in   BOOLEAN DEFAULT FALSE,
+        unlocked_slot3 BOOLEAN DEFAULT FALSE
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS bank_accounts (
+        discord_id VARCHAR PRIMARY KEY
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS identities (
+        id             SERIAL PRIMARY KEY,
+        discord_id     VARCHAR NOT NULL,
+        slot           INTEGER NOT NULL DEFAULT 1,
+        character_name VARCHAR,
+        family_name    VARCHAR,
+        birth_place    VARCHAR,
+        birth_date     VARCHAR,
+        gender         VARCHAR,
+        iban           VARCHAR UNIQUE,
+        balance        NUMERIC DEFAULT 0,
+        cash           NUMERIC DEFAULT 0,
+        frozen         BOOLEAN DEFAULT FALSE,
+        UNIQUE (discord_id, slot)
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS server_config (
+        key   VARCHAR PRIMARY KEY,
+        value TEXT
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS character_log (
+        id             SERIAL PRIMARY KEY,
+        discord_id     VARCHAR,
+        username       VARCHAR,
+        action         VARCHAR,
+        character_name VARCHAR,
+        slot           INTEGER,
+        details        TEXT,
+        created_at     TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS pending_identities (
+        id          SERIAL PRIMARY KEY,
+        discord_id  VARCHAR,
+        username    VARCHAR,
+        slot        INTEGER,
+        char_name   VARCHAR,
+        family_name VARCHAR,
+        birth_place VARCHAR,
+        birth_date  VARCHAR,
+        gender      VARCHAR,
+        status      VARCHAR DEFAULT 'pending',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS transactions (
+        id         SERIAL PRIMARY KEY,
+        from_iban  VARCHAR,
+        to_iban    VARCHAR,
+        amount     NUMERIC,
+        type       VARCHAR,
+        note       TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS inventory (
+        id         SERIAL PRIMARY KEY,
+        discord_id VARCHAR,
+        item_name  VARCHAR,
+        quantity   INTEGER DEFAULT 1,
+        added_at   TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS system_images (
+        system_key VARCHAR PRIMARY KEY,
+        image_url  TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS robberies (
+        id         SERIAL PRIMARY KEY,
+        name       VARCHAR,
+        tools      TEXT,
+        min_money  INTEGER DEFAULT 0,
+        max_money  INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS showroom (
+        id        SERIAL PRIMARY KEY,
+        car_name  VARCHAR,
+        car_type  VARCHAR,
+        price     NUMERIC DEFAULT 0,
+        color     VARCHAR,
+        available BOOLEAN DEFAULT TRUE,
+        added_by  VARCHAR,
+        added_at  TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS vehicles (
+        id         SERIAL PRIMARY KEY,
+        discord_id VARCHAR,
+        car_name   VARCHAR,
+        plate      VARCHAR UNIQUE,
+        added_at   TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS tickets (
+        id          SERIAL PRIMARY KEY,
+        discord_id  VARCHAR,
+        ticket_type VARCHAR,
+        subject     TEXT,
+        status      VARCHAR DEFAULT 'open',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS phone_messages (
+        id          SERIAL PRIMARY KEY,
+        sender_id   VARCHAR,
+        receiver_id VARCHAR,
+        content     TEXT,
+        read        BOOLEAN DEFAULT FALSE,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS phone_contacts (
+        id         SERIAL PRIMARY KEY,
+        owner_id   VARCHAR,
+        contact_id VARCHAR,
+        nickname   VARCHAR
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS x_accounts (
+        discord_id VARCHAR PRIMARY KEY,
+        x_username VARCHAR UNIQUE
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS x_posts (
+        id            SERIAL PRIMARY KEY,
+        discord_id    VARCHAR,
+        username      VARCHAR,
+        x_username    VARCHAR,
+        content       TEXT,
+        likes         INTEGER DEFAULT 0,
+        retweets      INTEGER DEFAULT 0,
+        replies       INTEGER DEFAULT 0,
+        type          TEXT DEFAULT 'tweet',
+        reply_to_id   INTEGER,
+        retweet_of_id INTEGER,
+        orig_username TEXT,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS snap_accounts (
+        discord_id    VARCHAR PRIMARY KEY,
+        snap_username VARCHAR UNIQUE,
+        score         INTEGER DEFAULT 0
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS snap_friends (
+        id          SERIAL PRIMARY KEY,
+        user_a      VARCHAR,
+        user_b      VARCHAR,
+        status      VARCHAR DEFAULT 'pending',
+        streak      INTEGER DEFAULT 0,
+        last_snap_a TIMESTAMPTZ,
+        last_snap_b TIMESTAMPTZ
+    )`);
+    await query(`CREATE TABLE IF NOT EXISTS snap_messages (
+        id          SERIAL PRIMARY KEY,
+        sender_id   VARCHAR,
+        receiver_id VARCHAR,
+        content     TEXT,
+        seen        BOOLEAN DEFAULT FALSE,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )`);
+}
+// جميع الجداول تُهيَّأ عبر initAllTables() عند بدء التشغيل
 
 async function ensureUser(discordId, username) {
     await query(
@@ -291,6 +468,13 @@ async function setConfig(key, value) {
         [key, value]
     );
 }
+async function setConfigDefault(key, value) {
+    await query(
+        `INSERT INTO server_config (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO NOTHING`,
+        [key, value]
+    );
+}
 
 async function logoutAllUsers() {
     await query('UPDATE users SET is_logged_in=FALSE');
@@ -433,14 +617,14 @@ async function getXTimeline(limit = 10) {
 }
 
 // x_posts migrations for retweet/reply columns
-(async () => {
+async function migrateXPosts() {
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweets  INTEGER DEFAULT 0`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS replies   INTEGER DEFAULT 0`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS type      TEXT DEFAULT 'tweet'`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS reply_to_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS retweet_of_id INTEGER`);
     await query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS orig_username TEXT`);
-})().catch(console.error);
+}
 
 async function likePost(postId) {
     const res = await query(
@@ -601,7 +785,7 @@ async function initPropertiesTable() {
         )
     `);
 }
-initPropertiesTable().catch(console.error);
+
 
 async function initAdminRanksTable() {
     await query(`
@@ -623,7 +807,7 @@ async function initAdminRanksTable() {
         )
     `);
 }
-initAdminRanksTable().catch(console.error);
+
 
 async function getRankTypes() {
     const res = await query('SELECT * FROM rank_types ORDER BY position ASC, id ASC');
@@ -688,7 +872,7 @@ async function initEquipmentTable() {
         )
     `);
 }
-initEquipmentTable().catch(console.error);
+
 
 async function addEquipmentItem(name, price, description) {
     const res = await query(
@@ -740,7 +924,7 @@ async function initMarketTable() {
         )
     `);
 }
-initMarketTable().catch(console.error);
+
 
 async function addMarketItem(name, price, description) {
     const res = await query(
@@ -791,7 +975,7 @@ async function initBlackMarketTable() {
         )
     `);
 }
-initBlackMarketTable().catch(console.error);
+
 
 async function addBlackMarketItem(name, price) {
     const res = await query(
@@ -1153,7 +1337,7 @@ async function initJobTables() {
         );
     }
 }
-initJobTables().catch(console.error);
+
 
 // ─── CASES SYSTEM ────────────────────────────────────────────────────────────
 
@@ -1189,7 +1373,7 @@ async function initCasesTable() {
         )
     `);
 }
-initCasesTable().catch(console.error);
+
 
 async function createCase(plaintiffId, plaintiffName, defendant, title, description, evidence, lawyerFee = '') {
     const count  = await query('SELECT COUNT(*) FROM cases');
@@ -1321,7 +1505,7 @@ async function initLawyerRequestsTable() {
         )
     `);
 }
-initLawyerRequestsTable().catch(console.error);
+
 
 async function createLawyerRequest(caseId, caseNumber, caseTitle, plaintiffId, plaintiffName, lawyerId) {
     await query(`DELETE FROM lawyer_requests WHERE case_id=$1`, [caseId]);
@@ -1360,7 +1544,7 @@ async function initJudgesTable() {
         )
     `);
 }
-initJudgesTable().catch(console.error);
+
 
 async function getJudges() {
     const res = await query('SELECT * FROM judges ORDER BY judge_name ASC');
@@ -1392,7 +1576,7 @@ async function initLawyersTable() {
         )
     `);
 }
-initLawyersTable().catch(console.error);
+
 
 async function getLawyers() {
     const res = await query('SELECT * FROM lawyers ORDER BY lawyer_name ASC');
@@ -1511,7 +1695,7 @@ module.exports = {
     query, ensureUser, generateIban,
     unlockSlot3, isSlot3Unlocked,
     updateIban,
-    getConfig, setConfig, logoutAllUsers, addCharacterLog, getCharacterLogs,
+    getConfig, setConfig, setConfigDefault, logoutAllUsers, addCharacterLog, getCharacterLogs,
     createPendingIdentity, getPendingIdentity, getPendingIdentities, updatePendingStatus,
     createIdentityFull, loginIdentity, logoutIdentity, getLoginStatus, getUserIdentities,
     setAdminRank, getAdminRank, removeAdminRank, getAllAdminRanks, updateAdminPoints,
@@ -1558,12 +1742,14 @@ module.exports = {
     addTicketType, removeTicketType, getTicketTypes,
     createPendingCompany, getPendingCompany, getAllPendingCompanies, updatePendingCompanyStatus,
     hasTradePermit, grantTradePermit, revokeTradePermit, getAllTradePermits,
+    createPermitApplication, getPermitApplication, getPermitApplicationsByUser, updatePermitApplicationStatus,
     createCompany, getCompanyByOwner, getCompanyByMember, getUserCompany, getCompanyById,
     getCompanyMembers, addCompanyMember, removeCompanyMember, updateCompanyMemberRole,
     depositToCompany, withdrawFromCompany, payCompanySalaries, getAllCompanies, dissolveCompany,
     createOpenTicket, getOpenTicketByChannel, removeOpenTicket,
     addStaffActivity, addStaffManualPoints, getStaffActivity, getAllStaffActivity,
     cuffPlayer, uncuffPlayer, isCuffed,
+    initAllTables,
 };
 
 /* ─── نظام الكلبشة ─────────────────────────────────────────────────────── */
@@ -1593,7 +1779,7 @@ async function initCuffedTable() {
         );
     `);
 }
-initCuffedTable().catch(console.error);
+
 
 /* ─── جدول آخر تجميع (لمنع التكرار) ─── */
 async function initGatheringTable() {
@@ -1605,7 +1791,7 @@ async function initGatheringTable() {
         );
     `);
 }
-initGatheringTable().catch(console.error);
+
 
 async function getLastGathered(userId) {
     const res = await pool.query('SELECT resource FROM gathering_last WHERE user_id=$1', [userId]);
@@ -1644,7 +1830,7 @@ async function initViolationsTable() {
     // إضافة العمود إن لم يكن موجوداً في جداول قديمة
     await pool.query(`ALTER TABLE violations ADD COLUMN IF NOT EXISTS saved_roles TEXT NOT NULL DEFAULT '[]';`);
 }
-initViolationsTable().catch(console.error);
+
 
 async function addViolation(userId, adminId, reason, expiresAt, savedRoles = []) {
     // احذف المخالفة القديمة إن وُجدت أولاً
@@ -1682,7 +1868,7 @@ async function initActivationTable() {
         );
     `);
 }
-initActivationTable().catch(console.error);
+
 
 async function createActivationRequest(userId, username, sonyId) {
     await pool.query(
@@ -1705,7 +1891,7 @@ async function deleteActivationRequest(id) {
 }
 
 /* ─── جداول التكتات ─── */
-(async () => {
+async function initTicketTables() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ticket_types (
             id         SERIAL PRIMARY KEY,
@@ -1723,7 +1909,7 @@ async function deleteActivationRequest(id) {
         );
     `);
     await pool.query(`ALTER TABLE ticket_types ADD COLUMN IF NOT EXISTS role_id TEXT`);
-})().catch(console.error);
+}
 
 async function addTicketType(name, emoji, roleId = null) {
     const res = await pool.query(
@@ -1762,7 +1948,7 @@ async function removeOpenTicket(channelId) {
 }
 
 /* ─── جدول نقاط الإدارة ─── */
-(async () => {
+async function initStaffActivityTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS staff_activity (
             discord_id    VARCHAR PRIMARY KEY,
@@ -1772,7 +1958,7 @@ async function removeOpenTicket(channelId) {
             manual_points INT DEFAULT 0
         )
     `);
-})().catch(console.error);
+}
 
 async function addStaffActivity(discordId, field) {
     const allowed = ['trips_count', 'gmc_count', 'tickets_count'];
@@ -1810,7 +1996,7 @@ async function getAllStaffActivity() {
 }
 
 /* ─── جداول نظام الشركات ─── */
-(async () => {
+async function initCompanyTables() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS pending_companies (
             id               SERIAL PRIMARY KEY,
@@ -1855,7 +2041,21 @@ async function getAllStaffActivity() {
             UNIQUE(company_id, discord_id)
         );
     `);
-})().catch(console.error);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS permit_applications (
+            id              SERIAL PRIMARY KEY,
+            discord_id      TEXT NOT NULL,
+            username        TEXT,
+            company_name    TEXT NOT NULL,
+            business_type   TEXT NOT NULL,
+            goals           TEXT NOT NULL,
+            status          TEXT DEFAULT 'pending',
+            reviewed_by     TEXT,
+            reviewed_at     TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+}
 
 async function createPendingCompany(data) {
     const res = await query(
@@ -1886,6 +2086,33 @@ async function grantTradePermit(discordId, grantedBy) {
         `INSERT INTO trade_permits (discord_id, granted_by) VALUES ($1, $2)
          ON CONFLICT (discord_id) DO UPDATE SET granted_by=$2, granted_at=NOW()`,
         [discordId, grantedBy]
+    );
+}
+
+/* ── permit_applications ── */
+async function createPermitApplication(data) {
+    const res = await query(
+        `INSERT INTO permit_applications (discord_id, username, company_name, business_type, goals)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [data.discordId, data.username, data.companyName, data.businessType, data.goals]
+    );
+    return res.rows[0];
+}
+async function getPermitApplication(id) {
+    const res = await query('SELECT * FROM permit_applications WHERE id=$1', [id]);
+    return res.rows[0] || null;
+}
+async function getPermitApplicationsByUser(discordId) {
+    const res = await query(
+        `SELECT * FROM permit_applications WHERE discord_id=$1 ORDER BY created_at DESC`,
+        [discordId]
+    );
+    return res.rows;
+}
+async function updatePermitApplicationStatus(id, status, reviewedBy) {
+    await query(
+        'UPDATE permit_applications SET status=$2, reviewed_by=$3, reviewed_at=NOW() WHERE id=$1',
+        [id, status, reviewedBy]
     );
 }
 async function revokeTradePermit(discordId) {
@@ -2000,7 +2227,7 @@ async function dissolveCompany(companyId) {
 }
 
 /* ─── جدول أزرار الأولوية ─── */
-(async () => {
+async function initPriorityButtonsTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS priority_buttons (
             id          SERIAL PRIMARY KEY,
@@ -2009,9 +2236,9 @@ async function dissolveCompany(companyId) {
             style       TEXT NOT NULL DEFAULT 'Primary'
         );
     `);
-})().catch(console.error);
+}
 
-(async () => {
+async function initMinistryDutyTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS ministry_duty (
             discord_id  TEXT PRIMARY KEY,
@@ -2019,7 +2246,7 @@ async function dissolveCompany(companyId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function setMinistryDuty(discordId, status) {
     await pool.query(
@@ -2034,7 +2261,7 @@ async function getMinistryDuty(discordId) {
 }
 
 /* ─── جدول الهويات المزيفة ─── */
-(async () => {
+async function initFakeIdentitiesTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS fake_identities (
             id          SERIAL PRIMARY KEY,
@@ -2046,7 +2273,7 @@ async function getMinistryDuty(discordId) {
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function createFakeIdentity(targetId, issuerId, fakeName, fakeIban, expiresAt) {
     await pool.query(`DELETE FROM fake_identities WHERE target_id=$1`, [targetId]);
@@ -2066,7 +2293,7 @@ async function deleteFakeIdentity(targetId) {
 }
 
 /* ─── جدول حضور CIA ─── */
-(async () => {
+async function initCiaDutyTable() {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS cia_duty (
             discord_id  TEXT PRIMARY KEY,
@@ -2074,7 +2301,7 @@ async function deleteFakeIdentity(targetId) {
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
-})().catch(console.error);
+}
 
 async function setCiaDuty(discordId, status) {
     await pool.query(
@@ -2108,4 +2335,44 @@ async function removePriorityButton(id) {
 async function getPriorityButtons() {
     const res = await pool.query(`SELECT * FROM priority_buttons ORDER BY id`);
     return res.rows;
+}
+
+/* ─── تهيئة جميع جداول قاعدة البيانات (يجب الانتظار قبل client.login) ── */
+async function initAllTables() {
+    // انتظار جاهزية PostgreSQL — Railway تشغّل البوت وقاعدة البيانات في آنٍ واحد
+    const MAX_RETRIES = 10;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const client = await pool.connect();
+            client.release();
+            break;
+        } catch (err) {
+            if (attempt === MAX_RETRIES) throw new Error(`تعذّر الاتصال بقاعدة البيانات بعد ${MAX_RETRIES} محاولات: ${err.message}`);
+            console.warn(`⚠️ قاعدة البيانات غير جاهزة (محاولة ${attempt}/${MAX_RETRIES}) — إعادة المحاولة خلال 3 ثوانٍ...`);
+            await new Promise(r => setTimeout(r, 3000));
+        }
+    }
+    await initCoreDB();
+    await migrateXPosts();
+    await initPropertiesTable();
+    await initAdminRanksTable();
+    await initEquipmentTable();
+    await initMarketTable();
+    await initBlackMarketTable();
+    await initJobTables();
+    await initCasesTable();
+    await initLawyerRequestsTable();
+    await initJudgesTable();
+    await initLawyersTable();
+    await initCuffedTable();
+    await initGatheringTable();
+    await initViolationsTable();
+    await initActivationTable();
+    await initTicketTables();
+    await initStaffActivityTable();
+    await initCompanyTables();
+    await initPriorityButtonsTable();
+    await initMinistryDutyTable();
+    await initFakeIdentitiesTable();
+    await initCiaDutyTable();
 }

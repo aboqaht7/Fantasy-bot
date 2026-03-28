@@ -5,7 +5,13 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "deploy": "node deploy-commands.js"
+    "deploy": "node deploy-commands.js",
+    "pm2": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop fantasy-bot",
+    "pm2:logs": "pm2 logs fantasy-bot"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "author": "عبدالله القحطاني",
   "license": "MIT",

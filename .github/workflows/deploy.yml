@@ -1,0 +1,49 @@
+name: 🚀 Deploy to Railway
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # ── فحص الكود قبل الرفع ────────────────────────────────────────────────────
+  lint:
+    name: ✅ فحص الكود
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: تثبيت التبعيات
+        run: npm ci
+
+      - name: فحص الصياغة
+        run: node --check index.js && node --check database.js
+        continue-on-error: false
+
+  # ── نشر على Railway ────────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 رفع على Railway
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: lint
+    # تأكد من إضافة RAILWAY_TOKEN في Repository Secrets
+    if: ${{ secrets.RAILWAY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        run: railway up --service fantasy-bot
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

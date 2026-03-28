@@ -25,10 +25,10 @@ const {
     ModalBuilder, TextInputBuilder, TextInputStyle,
     ActionRowBuilder, StringSelectMenuBuilder,
     ButtonBuilder, ButtonStyle, PermissionFlagsBits,
-    AuditLogEvent, Partials
+    AuditLogEvent, Partials, REST, Routes
 } = require('discord.js');
-const db = require('./database');
 require('dotenv').config();
+const db = require('./database');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
@@ -38,8 +38,12 @@ const client = new Client({
 client.commands = new Collection();
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
 for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.name, command);
+    try {
+        const command = require(`./commands/${file}`);
+        if (command?.name) client.commands.set(command.name, command);
+    } catch (e) {
+        console.error(`[CMD LOAD ERROR] ${file}:`, e.message);
+    }
 }
 
 /* ── منع معالجة نفس التفاعل مرتين (مشكلة Gateway) ────────────────────── */
@@ -53,13 +57,15 @@ function markInteraction(id) {
 
 /* ── جلسات التراكينق: targetId → { code, trackerId, channelId, guildId, timer } ── */
 const trackingSessions = new Map();
+/* ── كولداون التراكينق: userId → expiresAt (timestamp) ── */
+const trackingCooldowns = new Map();
 
 client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 
-    // ── ضبط رسائل الرحلات الافتراضية ──────────────────────────────────────
+    // ── ضبط رسائل الرحلات الافتراضية (تُكتب مرة واحدة فقط عند أول تشغيل) ──
     try {
-        await db.setConfig('trip_start_message',
+        await db.setConfigDefault('trip_start_message',
 `- إعـلان رحـلـة لـدولـة —FANTASY TOWN .
 
 
@@ -78,7 +84,7 @@ client.once('clientReady', async () => {
 - عـدم إزعـاج كـابـتـن الـطـائـرة والـمُـسـاعـد .
 || @everyone ||`);
 
-        await db.setConfig('trip_renewal_message',
+        await db.setConfigDefault('trip_renewal_message',
 `بدء الرحلة  — يوجد تجديد رحلة 
 الرجاء من الجميع وضع خيار { LAST LOCATION } 
 و الخروج من الرحلة و الدخول على الرحلة الجديدة 
@@ -88,7 +94,7 @@ client.once('clientReady', async () => {
 نتمنى لكم التوفيق دائماً ❣️
 || @everyone ||`);
 
-        await db.setConfig('trip_hurricane_message',
+        await db.setConfigDefault('trip_hurricane_message',
 `التجديد اشعار اعصار 
 
 ⚠️— يوجد اعصار في المدينة يجب على جميع اللاعبين 
@@ -99,9 +105,38 @@ client.once('clientReady', async () => {
 نتمنى لكم التوفيق دائماً ❣️
 || @everyone ||`);
 
-        console.log('✅ تم ضبط رسائل الرحلات');
+        console.log('✅ تم ضبط رسائل الرحلات الافتراضية');
     } catch (e) {
         console.error('❌ خطأ في ضبط رسائل الرحلات:', e.message);
+    }
+
+    // ── تسجيل السلاش كوماند تلقائياً عند بدء التشغيل ──────────────────────
+    if (!process.env.CLIENT_ID || !process.env.GUILD_ID) {
+        console.warn('⚠️ CLIENT_ID أو GUILD_ID غير مضبوطة — لن يتم تسجيل السلاش كوماند');
+    } else {
+        const slashCommands = [];
+        for (const command of client.commands.values()) {
+            if (!command.data) continue;
+            try {
+                slashCommands.push(command.data.toJSON());
+            } catch (e) {
+                console.error(`[SLASH REG ERROR] فشل تحويل بيانات الأمر "${command.name}":`, e.message);
+            }
+        }
+        if (slashCommands.length === 0) {
+            console.warn('⚠️ لم يُعثر على أي سلاش كوماند صالح — تم تخطي التسجيل');
+        } else {
+            try {
+                const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+                await rest.put(
+                    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+                    { body: slashCommands },
+                );
+                console.log(`✅ تم تسجيل ${slashCommands.length} سلاش كوماند تلقائياً`);
+            } catch (e) {
+                console.error('❌ خطأ في تسجيل السلاش كوماند:', e.message);
+            }
+        }
     }
 
     setInterval(async () => {
@@ -884,6 +919,192 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
+        // ── تصاريح التجارة — إصدار تصريح ──────────────────────────────────────────
+        if (interaction.customId === 'permit_issue_btn') {
+            try {
+                const identity = await db.getActiveIdentity(interaction.user.id);
+                if (!identity)
+                    return interaction.reply({ content: '❌ سجّل دخولك أولاً ثم حاول مجدداً.', flags: 64 });
+
+                const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+                const modal = new ModalBuilder()
+                    .setCustomId('permit_apply_modal')
+                    .setTitle('📋 طلب تصريح تجاري');
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_company_name')
+                            .setLabel('اسم الشركة')
+                            .setStyle(TextInputStyle.Short)
+                            .setPlaceholder('اسم الشركة التي ستؤسسها')
+                            .setRequired(true)
+                            .setMaxLength(100)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_business_type')
+                            .setLabel('نوع الأعمال')
+                            .setStyle(TextInputStyle.Short)
+                            .setPlaceholder('مثال: تجارة عقارات، مطاعم، خدمات...')
+                            .setRequired(true)
+                            .setMaxLength(200)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('permit_goals')
+                            .setLabel('أهداف الشركة')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder('اشرح أهداف شركتك بإيجاز')
+                            .setRequired(true)
+                            .setMaxLength(500)
+                    ),
+                );
+
+                await interaction.showModal(modal);
+            } catch (e) {
+                console.error('[PERMIT ISSUE BTN ERROR]', e);
+                if (!interaction.replied) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
+        // ── تصاريح التجارة — عرض تصاريحي ──────────────────────────────────────────
+        if (interaction.customId === 'permit_view_btn') {
+            try {
+                const permits = await db.getPermitApplicationsByUser(interaction.user.id);
+                if (!permits.length)
+                    return interaction.reply({ content: '📭 لا توجد لديك طلبات تصاريح حتى الآن.', flags: 64 });
+
+                const statusEmoji = { pending: '⏳', approved: '✅', rejected: '❌' };
+                const statusLabel = { pending: 'قيد المراجعة', approved: 'مقبول', rejected: 'مرفوض' };
+
+                const lines = permits.map((p, i) =>
+                    `**${i + 1}.** 🏢 ${p.company_name}\n` +
+                    `   ${statusEmoji[p.status] || '❓'} **${statusLabel[p.status] || p.status}**` +
+                    (p.reviewed_at ? ` — <t:${Math.floor(new Date(p.reviewed_at).getTime() / 1000)}:d>` : '')
+                );
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🗂️ تصاريحي التجارية')
+                    .setColor(0x1565C0)
+                    .setDescription(lines.join('\n\n'))
+                    .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                    .setTimestamp();
+
+                await interaction.reply({ embeds: [embed], flags: 64 });
+            } catch (e) {
+                console.error('[PERMIT VIEW BTN ERROR]', e);
+                if (!interaction.replied) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
+        // ── قبول / رفض طلبات التصاريح ──────────────────────────────────────────
+        if (interaction.customId.startsWith('approve_permit_') || interaction.customId.startsWith('reject_permit_')) {
+            const isApprove = interaction.customId.startsWith('approve_permit_');
+            const permitId = parseInt(interaction.customId.replace(isApprove ? 'approve_permit_' : 'reject_permit_', ''));
+            try {
+                const ministryRoleId = await db.getConfig('trade_ministry_role');
+                const isAdminUser = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+                const hasMinistryRole = ministryRoleId && interaction.member.roles.cache.has(ministryRoleId);
+                if (!isAdminUser && !hasMinistryRole)
+                    return interaction.reply({ content: '❌ هذا الزر لمسؤولي وزارة التجارة فقط.', flags: 64 });
+
+                const app = await db.getPermitApplication(permitId);
+                if (!app)
+                    return interaction.reply({ content: '❌ الطلب غير موجود.', flags: 64 });
+                if (app.status !== 'pending')
+                    return interaction.reply({ content: '❌ تمت معالجة هذا الطلب بالفعل.', flags: 64 });
+
+                if (isApprove) {
+                    // خصم 2000 ريال من المتقدم وإضافتها لمن وافق (الوزير)
+                    const PERMIT_FEE = 2000;
+                    const applicantIdentity = await db.getActiveIdentity(app.discord_id);
+                    if (!applicantIdentity || Number(applicantIdentity.balance) < PERMIT_FEE) {
+                        return interaction.reply({
+                            content: `❌ رصيد المتقدم غير كافٍ لخصم رسوم التصريح (\`${PERMIT_FEE.toLocaleString()} ريال\`).`,
+                            flags: 64
+                        });
+                    }
+
+                    // خصم من المتقدم
+                    await db.adminRemoveMoney(applicantIdentity.iban, PERMIT_FEE, 'رسوم التصريح التجاري');
+                    // إضافة للوزير الموافق
+                    const ministerIdentity = await db.getActiveIdentity(interaction.user.id);
+                    if (ministerIdentity) {
+                        await db.adminAddMoney(ministerIdentity.iban, PERMIT_FEE, 'رسوم التصريح التجاري المحصّلة');
+                    }
+
+                    // منح التصريح
+                    await db.grantTradePermit(app.discord_id, interaction.user.id);
+                    await db.updatePermitApplicationStatus(permitId, 'approved', interaction.user.id);
+
+                    const approveEmbed = new EmbedBuilder()
+                        .setTitle('✅ تم قبول طلب التصريح')
+                        .setColor(0x1B5E20)
+                        .addFields(
+                            { name: '👤 المتقدم', value: `<@${app.discord_id}>`, inline: true },
+                            { name: '🏢 الشركة', value: `**${app.company_name}**`, inline: true },
+                            { name: '✅ وافق عليه', value: `<@${interaction.user.id}>`, inline: true },
+                            { name: '💰 الرسوم', value: `\`${PERMIT_FEE.toLocaleString()} ريال\` خُصمت من المتقدم`, inline: false },
+                        )
+                        .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                        .setTimestamp();
+                    await interaction.update({ embeds: [approveEmbed], components: [] });
+
+                    // إشعار المتقدم
+                    try {
+                        const applicantUser = await client.users.fetch(app.discord_id);
+                        const dmEmbed = new EmbedBuilder()
+                            .setTitle('✅ تم قبول طلب تصريحك التجاري!')
+                            .setColor(0x1B5E20)
+                            .setDescription(
+                                `مبروك! تمت الموافقة على تصريح شركة **${app.company_name}**.\n\n` +
+                                `💰 تم خصم **${PERMIT_FEE.toLocaleString()} ريال** كرسوم تصريح.\n\n` +
+                                `يمكنك الآن تأسيس شركتك عبر أمر \`/شركة\`.`
+                            )
+                            .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                            .setTimestamp();
+                        await applicantUser.send({ embeds: [dmEmbed] });
+                    } catch (_) {}
+                } else {
+                    await db.updatePermitApplicationStatus(permitId, 'rejected', interaction.user.id);
+
+                    const rejectEmbed = new EmbedBuilder()
+                        .setTitle('❌ تم رفض طلب التصريح')
+                        .setColor(0xB71C1C)
+                        .addFields(
+                            { name: '👤 المتقدم', value: `<@${app.discord_id}>`, inline: true },
+                            { name: '🏢 الشركة', value: app.company_name, inline: true },
+                            { name: '❌ رفضه', value: `<@${interaction.user.id}>`, inline: true },
+                        )
+                        .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                        .setTimestamp();
+                    await interaction.update({ embeds: [rejectEmbed], components: [] });
+
+                    // إشعار المتقدم
+                    try {
+                        const applicantUser = await client.users.fetch(app.discord_id);
+                        const dmEmbed = new EmbedBuilder()
+                            .setTitle('❌ تم رفض طلب تصريحك التجاري')
+                            .setColor(0xB71C1C)
+                            .setDescription(
+                                `للأسف، تم رفض طلب تصريح شركة **${app.company_name}**.\n` +
+                                `تواصل مع وزارة التجارة للمزيد من التفاصيل.`
+                            )
+                            .setFooter({ text: 'وزارة التجارة • بوت FANTASY' })
+                            .setTimestamp();
+                        await applicantUser.send({ embeds: [dmEmbed] });
+                    } catch (_) {}
+                }
+            } catch (e) {
+                console.error('[PERMIT APPROVE/REJECT ERROR]', e);
+                if (!interaction.replied && !interaction.deferred) interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+            }
+            return;
+        }
+
         // ── أزرار وزارة التجارة ──────────────────────────────────────────────────
         if (['ministry_login_btn','ministry_logout_btn','ministry_companies_btn','ministry_approve_btn'].includes(interaction.customId)) {
             try {
@@ -1102,6 +1323,62 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
+        // ── CIA: ملفات المواطنين الكاملة ─────────────────────────────────────────
+        if (interaction.customId === 'cia_citizen_files_btn') {
+            try {
+                const ciaChefRoleId = await db.getConfig('cia_chef_role');
+                if (ciaChefRoleId && !interaction.member.roles.cache.has(ciaChefRoleId))
+                    return interaction.reply({ content: '🔒 هذا الزر لـ CIA Chef فقط.', flags: 64 });
+
+                await interaction.deferReply({ flags: 64 });
+                const allIdentities = await db.getAllActiveIdentities();
+
+                if (!allIdentities.length)
+                    return interaction.editReply({ content: '📭 لا يوجد مواطنون مسجلون حالياً.' });
+
+                const CHUNK = 5;
+                const embeds = [];
+                for (let i = 0; i < allIdentities.length; i += CHUNK) {
+                    const slice = allIdentities.slice(i, i + CHUNK);
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📂 ملفات المواطنين — ${i + 1} إلى ${Math.min(i + CHUNK, allIdentities.length)} من ${allIdentities.length}`)
+                        .setColor(0x0D1B2A)
+                        .setTimestamp();
+
+                    let desc = '';
+                    for (const p of slice) {
+                        const fullName   = [p.character_name, p.family_name].filter(Boolean).join(' ') || '—';
+                        const gender     = p.gender     || '—';
+                        const birthDate  = p.birth_date  || '—';
+                        const birthPlace = p.birth_place || '—';
+                        const violation  = await db.getViolationByUserId(p.discord_id);
+                        const sawabiq    = violation
+                            ? `⚠️ **${violation.reason}** (تنتهي: <t:${Math.floor(new Date(violation.expires_at).getTime() / 1000)}:R>)`
+                            : '✅ لا يوجد سوابق';
+
+                        desc +=
+                            `👤 **${fullName}** — <@${p.discord_id}>\n` +
+                            `🪪 رقم الهوية: \`${p.iban}\`\n` +
+                            `⚧ الجنس: ${gender}\n` +
+                            `🎂 تاريخ الميلاد: ${birthDate}\n` +
+                            `📍 مكان الميلاد: ${birthPlace}\n` +
+                            `📌 السوابق: ${sawabiq}\n\n`;
+                    }
+                    embed.setDescription(desc.slice(0, 4000));
+                    embeds.push(embed);
+                }
+
+                await interaction.editReply({ embeds: embeds.slice(0, 10) });
+            } catch (e) {
+                console.error('[CIA CITIZEN FILES ERROR]', e);
+                if (!interaction.replied && !interaction.deferred)
+                    interaction.reply({ content: '❌ حدث خطأ.', flags: 64 });
+                else
+                    interaction.editReply({ content: '❌ حدث خطأ.' });
+            }
+            return;
+        }
+
         // ── كشف ملفات المواطنين ──────────────────────────────────────────────────
         if (interaction.customId === 'security_files_btn') {
             try {
@@ -1164,7 +1441,13 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'tracking_btn') {
             const ciaRoleId = await db.getConfig('cia_chef_role');
             if (ciaRoleId && !interaction.member.roles.cache.has(ciaRoleId))
-                return interaction.reply({ content: '🔒 هذا الزر لأعضاء CIA فقط.', flags: 64 });
+                return interaction.reply({ content: '🔒 هذا الزر لـ CIA Chef فقط.', flags: 64 });
+
+            const cdExpires = trackingCooldowns.get(interaction.user.id);
+            if (cdExpires && Date.now() < cdExpires) {
+                const secsLeft = Math.ceil((cdExpires - Date.now()) / 1000);
+                return interaction.reply({ content: `⏳ التراكينق مغلق عليك لمدة **${secsLeft}** ثانية بعد.`, flags: 64 });
+            }
 
             const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
             const modal = new ModalBuilder()
@@ -3306,6 +3589,14 @@ client.on('interactionCreate', async interaction => {
                 if (targetId === interaction.user.id) {
                     return interaction.editReply({ content: '❌ ما تقدر تتبع نفسك.' });
                 }
+
+                // فحص الكولداون
+                const cdExpires = trackingCooldowns.get(interaction.user.id);
+                if (cdExpires && Date.now() < cdExpires) {
+                    const secsLeft = Math.ceil((cdExpires - Date.now()) / 1000);
+                    return interaction.editReply({ content: `⏳ التراكينق مغلق عليك، يتاح بعد **${secsLeft}** ثانية.` });
+                }
+
                 if (trackingSessions.has(targetId)) {
                     return interaction.editReply({ content: '⚠️ هذا الشخص عليه تراكينق نشط بالفعل.' });
                 }
@@ -3319,6 +3610,11 @@ client.on('interactionCreate', async interaction => {
                 let code = '';
                 for (let i = 0; i < 6; i++) code += CHARS[Math.floor(Math.random() * CHARS.length)];
 
+                // تفعيل الكولداون (10 دقائق)
+                const COOLDOWN_MS = 10 * 60 * 1000;
+                trackingCooldowns.set(interaction.user.id, Date.now() + COOLDOWN_MS);
+                setTimeout(() => trackingCooldowns.delete(interaction.user.id), COOLDOWN_MS);
+
                 let dmSent = true;
                 try {
                     await targetMember.send(
@@ -3331,11 +3627,26 @@ client.on('interactionCreate', async interaction => {
                     dmSent = false;
                 }
 
+                // إشعار الأونر (صاحب السيرفر) بأن تراكينق بدأ
+                try {
+                    const ownerUser = await client.users.fetch(interaction.guild.ownerId);
+                    const ownerNotifEmbed = new EmbedBuilder()
+                        .setTitle('📡 تم بدء تراكينق — إشعار الأونر')
+                        .setColor(0xE53935)
+                        .setDescription(
+                            `🕵️ **CIA Chef** <@${interaction.user.id}> بدأ تراكينق على ${targetMember}\n` +
+                            `👤 المُتتبَع: **${targetMember.displayName}** (\`${targetId}\`)\n` +
+                            `🏠 السيرفر: **${interaction.guild.name}**\n` +
+                            `📅 الوقت: <t:${Math.floor(Date.now() / 1000)}:F>`
+                        )
+                        .setTimestamp();
+                    await ownerUser.send({ embeds: [ownerNotifEmbed] });
+                } catch (_) {}
+
                 const timer = setTimeout(async () => {
                     if (!trackingSessions.has(targetId)) return;
                     trackingSessions.delete(targetId);
                     try {
-                        const trackerUser = await client.users.fetch(interaction.user.id);
                         const ch = await client.channels.fetch(interaction.channelId).catch(() => null);
                         if (ch) {
                             const doneEmbed = new EmbedBuilder()
@@ -3367,7 +3678,8 @@ client.on('interactionCreate', async interaction => {
                         `🎯 يتم الآن تتبع ${targetMember} لمدة **20 ثانية**\n` +
                         (dmSent
                             ? `📨 تم إرسال كود الإلغاء له في الخاص`
-                            : `⚠️ لم يتمكن البوت من إرسال رسالة خاصة للشخص (الـ DM مغلق)`)
+                            : `⚠️ لم يتمكن البوت من إرسال رسالة خاصة للشخص (الـ DM مغلق)`) +
+                        `\n⏳ سيُفتح التراكينق مجدداً بعد **10 دقائق**`
                     )
                     .setTimestamp();
 
@@ -3375,6 +3687,77 @@ client.on('interactionCreate', async interaction => {
             } catch (e) {
                 console.error('[TRACKING MODAL ERROR]', e);
                 if (!interaction.replied) interaction.editReply({ content: '❌ حدث خطأ.' });
+            }
+            return;
+        }
+
+        // ── طلب تصريح تجاري ────────────────────────────────────────────────
+        if (interaction.customId === 'permit_apply_modal') {
+            try {
+                await interaction.deferReply({ flags: 64 });
+
+                const companyName  = interaction.fields.getTextInputValue('permit_company_name').trim();
+                const businessType = interaction.fields.getTextInputValue('permit_business_type').trim();
+                const goals        = interaction.fields.getTextInputValue('permit_goals').trim();
+
+                const identity = await db.getActiveIdentity(interaction.user.id);
+                if (!identity)
+                    return interaction.editReply({ content: '❌ سجّل دخولك أولاً ثم حاول مجدداً.' });
+
+                // تحقق إذا عنده تصريح مقبول بالفعل
+                const hasPerm = await db.hasTradePermit(interaction.user.id);
+                if (hasPerm)
+                    return interaction.editReply({ content: '⚠️ لديك تصريح تجاري نشط بالفعل.' });
+
+                const permitChannelId = await db.getConfig('permit_approval_channel');
+                if (!permitChannelId)
+                    return interaction.editReply({ content: '❌ لم يتم تحديد قناة قبول التصاريح. تواصل مع الإدارة.' });
+
+                const app = await db.createPermitApplication({
+                    discordId:    interaction.user.id,
+                    username:     interaction.user.username,
+                    companyName,
+                    businessType,
+                    goals,
+                });
+
+                await interaction.editReply({
+                    content: `⏳ تم إرسال طلب تصريح شركة **${companyName}** برقم \`#${app.id}\` إلى وزارة التجارة.\nسيصلك رد عند قبول أو رفض الطلب.`,
+                });
+
+                try {
+                    const permitCh = await client.channels.fetch(permitChannelId);
+                    if (permitCh) {
+                        const appEmbed = new EmbedBuilder()
+                            .setTitle(`📋 طلب تصريح تجاري — #${app.id}`)
+                            .setColor(0xF57F17)
+                            .setThumbnail(interaction.user.displayAvatarURL())
+                            .addFields(
+                                { name: '👤 المتقدم', value: `<@${interaction.user.id}> — \`${interaction.user.username}\``, inline: false },
+                                { name: '🏷️ هويته', value: identity.character_name || '—', inline: true },
+                                { name: '💰 رصيد البنك', value: `\`${Number(identity.balance || 0).toLocaleString()} ريال\``, inline: true },
+                                { name: '🏢 اسم الشركة', value: `**${companyName}**`, inline: false },
+                                { name: '🏪 نوع الأعمال', value: `\`\`\`${businessType}\`\`\``, inline: false },
+                                { name: '🎯 الأهداف', value: `\`\`\`${goals}\`\`\``, inline: false },
+                            )
+                            .setFooter({ text: `طلب #${app.id} • بانتظار المراجعة` })
+                            .setTimestamp();
+
+                        const btnRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId(`approve_permit_${app.id}`).setLabel('✅ قبول').setStyle(ButtonStyle.Success),
+                            new ButtonBuilder().setCustomId(`reject_permit_${app.id}`).setLabel('❌ رفض').setStyle(ButtonStyle.Danger),
+                        );
+                        await permitCh.send({ embeds: [appEmbed], components: [btnRow] });
+                    }
+                } catch (chErr) {
+                    console.error('[PERMIT CHANNEL SEND ERROR]', chErr);
+                }
+            } catch (e) {
+                console.error('[PERMIT APPLY MODAL ERROR]', e);
+                if (!interaction.replied && !interaction.deferred)
+                    interaction.reply({ content: '❌ حدث خطأ أثناء إرسال الطلب.', flags: 64 });
+                else if (interaction.deferred)
+                    interaction.editReply({ content: '❌ حدث خطأ أثناء إرسال الطلب.' });
             }
             return;
         }
@@ -4676,9 +5059,9 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    if (!interaction.isCommand()) return;
+    if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
-    if (!command) return;
+    if (!command || !command.slashExecute) return;
     try {
         await command.slashExecute(interaction, db);
     } catch (error) {
@@ -4787,10 +5170,6 @@ client.on('messageDelete', async (message) => {
 });
 
 client.on('error', (err) => console.error('Discord client error:', err));
-process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
-process.on('uncaughtException',  (err) => console.error('Uncaught exception:', err));
-process.on('SIGTERM', () => { console.log('SIGTERM received — exiting.'); process.exit(0); });
-process.on('SIGINT',  () => { console.log('SIGINT received — exiting.');  process.exit(0); });
 
 // ── فحص دوري كل دقيقة لرفع المخالفات المنتهية ──────────────────────────
 setInterval(async () => {
@@ -4853,4 +5232,6 @@ http.createServer((req, res) => {
     res.end('OK');
 }).listen(process.env.PORT || 3000);
 
-client.login(process.env.DISCORD_TOKEN);
+db.initAllTables()
+    .then(() => client.login(process.env.DISCORD_TOKEN))
+    .catch(err => { console.error('❌ فشل تهيئة البوت:', err); process.exit(1); });

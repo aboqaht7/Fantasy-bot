@@ -1,0 +1,21 @@
+# ─── Railway.app — أسهل طريقة لاستضافة البوت مجاناً ────────────────────────
+# رابط التسجيل: https://railway.app
+#
+# خطوات الرفع:
+# 1. سجّل حساباً على railway.app
+# 2. اضغط "New Project" → "Deploy from GitHub repo"
+# 3. اختر هذا المستودع
+# 4. أضف قاعدة بيانات: Add Service → Database → PostgreSQL
+# 5. في Variables أضف: DISCORD_TOKEN و CLIENT_ID و GUILD_ID
+# 6. متغير DATABASE_URL يُملأ تلقائياً من قاعدة بيانات Railway
+# ─────────────────────────────────────────────────────────────────────────────
+
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "node index.js"
+healthcheckPath = "/"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
